@@ -16,6 +16,7 @@ import { log, getErrorMessage } from './logging';
 import { LogLevel } from './types';
 import * as taskManager from './taskManager';
 import * as aiQueue from './aiQueue';
+import * as responseQueue from './responseQueue';
 import { validatePort } from './numberValidation';
 
 let server: http.Server | undefined;
@@ -220,6 +221,9 @@ export function getServer(): http.Server | undefined {
  * - POST /tasks: Create new task
  * - PUT /tasks/:id/status: Update task status
  * - DELETE /tasks/:id: Delete task
+ * - POST /responses: Submit response for a completed task
+ * - GET /responses: Get pending responses (marks as read)
+ * - GET /responses/stats: Response queue statistics
  * 
  * Security:
  * - Enforces 1MB max request body size
@@ -255,6 +259,12 @@ async function handleRequest(
 		await handleFeedback(req, res, sendToAgent);
 	} else if (url === '/restart-app' || url.startsWith('/restart-app?')) {
 		await handleRestartApp(req, res);
+	} else if (url === '/responses' && method === 'POST') {
+		await handlePostResponse(req, res);
+	} else if (url === '/responses' && method === 'GET') {
+		handleGetResponses(req, res);
+	} else if (url === '/responses/stats' && method === 'GET') {
+		handleResponseStats(res);
 	} else if (url === '/ai/queue' && method === 'GET') {
 		handleGetQueue(res);
 	} else if (url === '/ai/queue' && method === 'POST') {
@@ -356,6 +366,29 @@ DELETE /ai/queue/:id
 POST /ai/queue/clear
     Clear all processed (completed and failed) instructions
     Response: { success: true, message: "Cleared N instructions" }
+
+POST /responses
+    Submit a structured response for a completed task
+    Body: {
+        "taskId": "task-id",
+        "status": "completed|partial|failed|blocked",
+        "summary": "What was done",
+        "findings": ["key finding 1", "key finding 2"],
+        "blockers": ["blocker if any"],
+        "nextQuestions": ["question back to submitter"]
+    }
+    Response: { success: true, response: {...} }
+
+GET /responses
+    Get pending (unread) responses. Marks returned responses as read.
+    Query params:
+      ?all=true    - Return all responses (not just unread)
+      ?taskId=ID   - Filter by task ID
+    Response: { responses: [...], count: number }
+
+GET /responses/stats
+    Get response queue statistics
+    Response: { total, pending, read }
 
 Examples:
 ---------
@@ -782,6 +815,95 @@ function handleDeleteFromQueue(res: http.ServerResponse, url: string): void {
 			res.writeHead(404, { 'Content-Type': 'application/json' });
 			res.end(JSON.stringify({ error: 'Not found', message: 'Instruction ID not found in queue' }));
 		}
+	} catch (error) {
+		res.writeHead(500, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ error: 'Internal server error', message: getErrorMessage(error) }));
+	}
+}
+
+/**
+ * Handle POST /responses - Submit a response for a completed task
+ */
+async function handlePostResponse(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+	try {
+		const body = await readRequestBody(req);
+		const data = JSON.parse(body);
+
+		if (!data.taskId || typeof data.taskId !== 'string') {
+			res.writeHead(400, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Missing or invalid "taskId" field' }));
+			return;
+		}
+
+		if (!data.status || !['completed', 'partial', 'failed', 'blocked'].includes(data.status)) {
+			res.writeHead(400, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Invalid or missing "status" field', valid: ['completed', 'partial', 'failed', 'blocked'] }));
+			return;
+		}
+
+		if (!data.summary || typeof data.summary !== 'string') {
+			res.writeHead(400, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Missing or invalid "summary" field' }));
+			return;
+		}
+
+		const response = responseQueue.addResponse(
+			data.taskId,
+			data.status,
+			data.summary,
+			Array.isArray(data.findings) ? data.findings : undefined,
+			Array.isArray(data.blockers) ? data.blockers : undefined,
+			Array.isArray(data.nextQuestions) ? data.nextQuestions : undefined
+		);
+
+		res.writeHead(201, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ success: true, response }));
+	} catch (error) {
+		if (error instanceof SyntaxError) {
+			res.writeHead(400, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Invalid JSON format' }));
+		} else {
+			log(LogLevel.ERROR, 'Failed to create response', getErrorMessage(error));
+			res.writeHead(500, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Failed to create response' }));
+		}
+	}
+}
+
+/**
+ * Handle GET /responses - Get pending responses (marks them as read)
+ */
+function handleGetResponses(req: http.IncomingMessage, res: http.ServerResponse): void {
+	try {
+		const url = req.url || '/responses';
+		const queryIndex = url.indexOf('?');
+		const params = queryIndex >= 0 ? new URLSearchParams(url.slice(queryIndex)) : new URLSearchParams();
+		const all = params.get('all') === 'true';
+		const taskId = params.get('taskId') || undefined;
+
+		let responses;
+		if (all || taskId) {
+			responses = responseQueue.getAllResponses(taskId);
+		} else {
+			responses = responseQueue.getPendingResponses();
+		}
+
+		res.writeHead(200, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ responses, count: responses.length }));
+	} catch (error) {
+		res.writeHead(500, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ error: 'Internal server error', message: getErrorMessage(error) }));
+	}
+}
+
+/**
+ * Handle GET /responses/stats - Response queue statistics
+ */
+function handleResponseStats(res: http.ServerResponse): void {
+	try {
+		const stats = responseQueue.getResponseStats();
+		res.writeHead(200, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify(stats));
 	} catch (error) {
 		res.writeHead(500, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ error: 'Internal server error', message: getErrorMessage(error) }));
