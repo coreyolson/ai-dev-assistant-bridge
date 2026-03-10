@@ -15,6 +15,7 @@ import * as chatIntegration from './modules/chatIntegration';
 import * as autoContinue from './modules/autoContinue';
 import * as statusBar from './modules/statusBar';
 import * as commands from './modules/commands';
+import * as aiQueue from './modules/aiQueue';
 import { formatCountdown } from './modules/timeFormatting';
 
 let outputChannel: vscode.OutputChannel;
@@ -185,6 +186,9 @@ export async function activate(context: vscode.ExtensionContext) {
  */
 function startFeedbackServer(context: vscode.ExtensionContext) {
 	server.startServer(context, currentPort, chatIntegration.sendToAgent);
+
+	// Enable auto-processing of AI queue so external dispatches (e.g. Goltana) get sent to Copilot immediately
+	aiQueue.setAutoProcess(true, chatIntegration.sendToAgent);
 }
 
 /**
