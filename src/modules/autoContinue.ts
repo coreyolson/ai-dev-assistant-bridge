@@ -141,6 +141,7 @@ export async function getSmartAutoContinueMessage(
 							: task.description;
 						combinedMessage += ` - ${shortDesc}`;
 					}
+					combinedMessage += ` [id:${task.id}]`;
 				}
 				if (pendingTasks.length > 5) {
 					combinedMessage += `\n... and ${pendingTasks.length - 5} more tasks`;

@@ -61,6 +61,7 @@ export function formatFeedbackMessage(feedbackMessage: string, appContext?: unkn
 	fullMessage += `• If a bug → find and fix root cause\n`;
 	fullMessage += `• If a feature → draft implementation plan\n`;
 	fullMessage += `• Apply and commit changes\n`;
+	fullMessage += `• Mark tasks done: curl -X PUT http://localhost:3737/tasks/<ID>/status -H 'Content-Type: application/json' -d '{"status":"completed"}'\n`;
 
 	return fullMessage;
 }
