@@ -153,7 +153,7 @@ export async function findAvailablePort(context: vscode.ExtensionContext): Promi
  * 
  * @internal This function is not exported as it's an implementation detail
  */
-async function isPortAvailable(port: number): Promise<boolean> {
+export async function isPortAvailable(port: number): Promise<boolean> {
 	return new Promise((resolve) => {
 		const testServer = http.createServer();
 		

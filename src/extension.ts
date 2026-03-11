@@ -78,11 +78,26 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 	
 	const configuredPort = config.get<number>('port');
-	
-	// Always use auto-selection to ensure each window gets unique port
-	// Don't save back to config - let each window find its own port
-	currentPort = await portManager.findAvailablePort(context);
-	log(LogLevel.INFO, `Auto-selected port: ${currentPort} for this window`);
+	const portInspect = config.inspect<number>('port');
+	const hasExplicitPort = portInspect?.workspaceValue !== undefined
+		|| portInspect?.workspaceFolderValue !== undefined;
+
+	if (hasExplicitPort && configuredPort) {
+		// User pinned a port in workspace settings — honor it
+		const available = await portManager.isPortAvailable(configuredPort);
+		if (available) {
+			currentPort = configuredPort;
+			log(LogLevel.INFO, `Using workspace-configured port: ${currentPort}`);
+		} else {
+			log(LogLevel.WARN, `Configured port ${configuredPort} is in use — falling back to auto-discovery`);
+			currentPort = await portManager.findAvailablePort(context);
+			log(LogLevel.INFO, `Auto-selected port: ${currentPort} for this window`);
+		}
+	} else {
+		// No explicit setting — auto-discover
+		currentPort = await portManager.findAvailablePort(context);
+		log(LogLevel.INFO, `Auto-selected port: ${currentPort} for this window`);
+	}
 	
 	// Log window identification to help debug multi-window scenarios
 	const workspaceName = vscode.workspace.name || 'No Workspace';
