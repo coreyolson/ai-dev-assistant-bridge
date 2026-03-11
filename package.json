@@ -237,7 +237,7 @@
 				},
 				"aiDevAssistantBridge.autoContinue.cleanup.interval": {
 					"type": "number",
-					"default": 1200,
+					"default": 120,
 					"scope": "resource",
 					"description": "🧹 Cleanup interval (seconds)",
 					"order": 51

@@ -438,7 +438,7 @@ async function getSettingsHtml(config: vscode.WorkspaceConfiguration, actualPort
 		{ key: 'improvements', icon: '✨', name: 'Improvements', interval: 600 },
 		{ key: 'coverage', icon: '🧪', name: 'Coverage', interval: 900 },
 		{ key: 'robustness', icon: '🛡️', name: 'Robustness', interval: 600 },
-		{ key: 'cleanup', icon: '🧹', name: 'Cleanup', interval: 1200 },
+		{ key: 'cleanup', icon: '🧹', name: 'Cleanup', interval: 120 },
 		{ key: 'commits', icon: '💾', name: 'Commits', interval: 900 }
 	];
 
