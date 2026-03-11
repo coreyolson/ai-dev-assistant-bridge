@@ -13,8 +13,12 @@
  */
 import * as vscode from 'vscode';
 import * as http from 'http';
+import * as fs from 'fs';
+import * as path from 'path';
 import { log } from './logging';
 import { LogLevel } from './types';
+
+const PORT_FILENAME = '.bridge-port';
 
 const PORT_REGISTRY_KEY = 'aiDevAssistantBridge.portRegistry';
 const BASE_PORT = 3737;
@@ -197,5 +201,43 @@ export async function releasePort(context: vscode.ExtensionContext, port: number
 	);
 	
 	await savePortRegistry(context, filtered);
+	removeBridgePortFiles();
 	log(LogLevel.INFO, `Released port ${port}`);
+}
+
+/**
+ * Write a .bridge-port file to each workspace folder so external consumers
+ * (e.g. Goltana) can discover which port the bridge is listening on.
+ */
+export function writeBridgePortFiles(port: number): void {
+	const folders = vscode.workspace.workspaceFolders;
+	if (!folders) return;
+	for (const folder of folders) {
+		try {
+			const filePath = path.join(folder.uri.fsPath, PORT_FILENAME);
+			fs.writeFileSync(filePath, String(port), 'utf-8');
+			log(LogLevel.INFO, `Wrote ${PORT_FILENAME} (${port}) to ${folder.name}`);
+		} catch (err) {
+			log(LogLevel.WARN, `Failed to write ${PORT_FILENAME} to ${folder.name}: ${err}`);
+		}
+	}
+}
+
+/**
+ * Remove .bridge-port files from workspace folders on deactivation.
+ */
+export function removeBridgePortFiles(): void {
+	const folders = vscode.workspace.workspaceFolders;
+	if (!folders) return;
+	for (const folder of folders) {
+		try {
+			const filePath = path.join(folder.uri.fsPath, PORT_FILENAME);
+			if (fs.existsSync(filePath)) {
+				fs.unlinkSync(filePath);
+				log(LogLevel.INFO, `Removed ${PORT_FILENAME} from ${folder.name}`);
+			}
+		} catch {
+			// Best-effort cleanup
+		}
+	}
 }

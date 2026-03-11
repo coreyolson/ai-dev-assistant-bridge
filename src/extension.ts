@@ -112,6 +112,9 @@ export async function activate(context: vscode.ExtensionContext) {
 	// Start HTTP server to receive feedback
 	startFeedbackServer(context);
 
+	// Write port discovery file to each workspace folder
+	portManager.writeBridgePortFiles(currentPort);
+
 	// Start auto-continue only if enabled in config
 	const autoEnabled = config.get<boolean>('autoContinue.enabled', false);
 	const inspectValue = config.inspect<boolean>('autoContinue.enabled');
