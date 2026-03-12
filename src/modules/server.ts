@@ -273,6 +273,12 @@ async function handleRequest(
 		await handleProcessQueue(res, sendToAgent);
 	} else if (url === '/ai/queue/stats' && method === 'GET') {
 		handleGetQueueStats(res);
+	} else if (url === '/ai/queue/pending' && method === 'GET') {
+		handleGetPendingQueue(res);
+	} else if (url === '/ai/queue/stalled' && method === 'GET') {
+		handleGetStalledQueue(res);
+	} else if (url.match(/^\/ai\/queue\/[^/]+\/heartbeat$/) && method === 'POST') {
+		handleQueueHeartbeat(res, url);
 	} else if (url.startsWith('/ai/queue/') && method === 'DELETE') {
 		handleDeleteFromQueue(res, url);
 	} else if (url === '/ai/queue/clear' && method === 'POST') {
@@ -835,9 +841,9 @@ async function handlePostResponse(req: http.IncomingMessage, res: http.ServerRes
 			return;
 		}
 
-		if (!data.status || !['completed', 'partial', 'failed', 'blocked'].includes(data.status)) {
+		if (!data.status || !['completed', 'partial', 'failed', 'blocked', 'in-progress'].includes(data.status)) {
 			res.writeHead(400, { 'Content-Type': 'application/json' });
-			res.end(JSON.stringify({ error: 'Invalid or missing "status" field', valid: ['completed', 'partial', 'failed', 'blocked'] }));
+			res.end(JSON.stringify({ error: 'Invalid or missing "status" field', valid: ['completed', 'partial', 'failed', 'blocked', 'in-progress'] }));
 			return;
 		}
 
@@ -921,6 +927,60 @@ function handleClearQueue(res: http.ServerResponse): void {
 			success: true, 
 			message: `Cleared ${cleared} processed instructions` 
 		}));
+	} catch (error) {
+		res.writeHead(500, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ error: 'Internal server error', message: getErrorMessage(error) }));
+	}
+}
+
+/**
+ * Handle GET /ai/queue/pending — tasks not yet finalized
+ */
+function handleGetPendingQueue(res: http.ServerResponse): void {
+	try {
+		const pending = aiQueue.getPendingInstructions();
+		res.writeHead(200, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ instructions: pending, count: pending.length }));
+	} catch (error) {
+		res.writeHead(500, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ error: 'Internal server error', message: getErrorMessage(error) }));
+	}
+}
+
+/**
+ * Handle GET /ai/queue/stalled — tasks with expired heartbeat
+ */
+function handleGetStalledQueue(res: http.ServerResponse): void {
+	try {
+		const stalled = aiQueue.getStalledInstructions();
+		res.writeHead(200, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ instructions: stalled, count: stalled.length }));
+	} catch (error) {
+		res.writeHead(500, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ error: 'Internal server error', message: getErrorMessage(error) }));
+	}
+}
+
+/**
+ * Handle POST /ai/queue/:id/heartbeat — keepalive for processing tasks
+ */
+function handleQueueHeartbeat(res: http.ServerResponse, url: string): void {
+	try {
+		const parts = url.split('/');
+		const id = parts[3]; // /ai/queue/:id/heartbeat
+		if (!id) {
+			res.writeHead(400, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Missing instruction ID' }));
+			return;
+		}
+		const success = aiQueue.recordHeartbeat(id);
+		if (success) {
+			res.writeHead(200, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ success: true, timestamp: new Date().toISOString() }));
+		} else {
+			res.writeHead(404, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Instruction not found or not processing' }));
+		}
 	} catch (error) {
 		res.writeHead(500, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ error: 'Internal server error', message: getErrorMessage(error) }));

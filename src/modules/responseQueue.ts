@@ -18,7 +18,7 @@ import { LogLevel } from './types';
 export interface TaskResponse {
 	id: string;
 	taskId: string;
-	status: 'completed' | 'partial' | 'failed' | 'blocked';
+	status: 'completed' | 'partial' | 'failed' | 'blocked' | 'in-progress';
 	summary: string;
 	findings?: string[];
 	blockers?: string[];

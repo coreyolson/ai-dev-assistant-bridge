@@ -205,6 +205,9 @@ export async function activate(context: vscode.ExtensionContext) {
 function startFeedbackServer(context: vscode.ExtensionContext) {
 	server.startServer(context, currentPort, chatIntegration.sendToAgent);
 
+	// Initialize queue persistence and stall detection
+	aiQueue.initQueue(context);
+
 	// Enable auto-processing of AI queue so external dispatches (e.g. Goltana) get sent to Copilot immediately
 	aiQueue.setAutoProcess(true, chatIntegration.sendToAgent);
 }

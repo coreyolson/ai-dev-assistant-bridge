@@ -25,7 +25,9 @@ export interface QueueInstruction {
 	priority: 'low' | 'normal' | 'high' | 'urgent';
 	source: string;
 	timestamp: string;
-	status: 'pending' | 'processing' | 'completed' | 'failed';
+	status: 'pending' | 'processing' | 'completed' | 'failed' | 'stalled';
+	claimedAt?: string;
+	lastHeartbeat?: string;
 	result?: string;
 	error?: string;
 	metadata?: Record<string, unknown>;
@@ -38,6 +40,46 @@ let instructionQueue: QueueInstruction[] = [];
 let processingActive = false;
 let autoProcessEnabled = false;
 let autoProcessCallback: ((message: string, context?: unknown) => Promise<boolean>) | undefined;
+let extensionContext: vscode.ExtensionContext | undefined;
+let stallCheckInterval: ReturnType<typeof setInterval> | undefined;
+
+const STALL_TIMEOUT_MS = 5 * 60 * 1000;    // 5 minutes with no heartbeat → stalled
+const REQUEUE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes stalled → re-queue
+
+/**
+ * Initialize queue with persistence context
+ */
+export function initQueue(context: vscode.ExtensionContext): void {
+	extensionContext = context;
+	loadQueue();
+	startStallDetection();
+	context.subscriptions.push({ dispose: () => { if (stallCheckInterval) clearInterval(stallCheckInterval); } });
+}
+
+/** Persist queue to globalState */
+function saveQueue(): void {
+	if (!extensionContext) return;
+	extensionContext.globalState.update('aiQueue', instructionQueue);
+}
+
+/** Load queue from globalState, reset interrupted tasks */
+function loadQueue(): void {
+	if (!extensionContext) return;
+	const saved = extensionContext.globalState.get<QueueInstruction[]>('aiQueue');
+	if (Array.isArray(saved) && saved.length > 0) {
+		instructionQueue = saved;
+		// Tasks that were processing at shutdown get re-queued
+		for (const item of instructionQueue) {
+			if (item.status === 'processing' || item.status === 'stalled') {
+				item.status = 'pending';
+				item.claimedAt = undefined;
+				item.lastHeartbeat = undefined;
+			}
+		}
+		saveQueue();
+		log(LogLevel.INFO, `Loaded ${instructionQueue.length} instructions from persistent storage`);
+	}
+}
 
 /**
  * Add instruction to queue
@@ -65,6 +107,7 @@ export function enqueueInstruction(
 	
 	instructionQueue.push(queueItem);
 	sortQueueByPriority();
+	saveQueue();
 	
 	log(LogLevel.INFO, `Enqueued instruction from ${source}`, { id: queueItem.id, priority });
 	
@@ -106,6 +149,7 @@ export function removeInstruction(id: string): boolean {
 	const index = instructionQueue.findIndex(item => item.id === id);
 	if (index !== -1) {
 		instructionQueue.splice(index, 1);
+		saveQueue();
 		log(LogLevel.INFO, `Removed instruction from queue: ${id}`);
 		return true;
 	}
@@ -119,9 +163,10 @@ export function removeInstruction(id: string): boolean {
 export function clearProcessed(): number {
 	const beforeLength = instructionQueue.length;
 	instructionQueue = instructionQueue.filter(
-		item => item.status === 'pending' || item.status === 'processing'
+		item => item.status === 'pending' || item.status === 'processing' || item.status === 'stalled'
 	);
 	const cleared = beforeLength - instructionQueue.length;
+	saveQueue();
 	log(LogLevel.INFO, `Cleared ${cleared} processed instructions`);
 	return cleared;
 }
@@ -132,6 +177,7 @@ export function clearProcessed(): number {
 export function clearQueue(): void {
 	const count = instructionQueue.length;
 	instructionQueue = [];
+	saveQueue();
 	log(LogLevel.INFO, `Cleared all ${count} instructions from queue`);
 }
 
@@ -155,6 +201,9 @@ export async function processNextInstruction(
 	
 	processingActive = true;
 	pending.status = 'processing';
+	pending.claimedAt = new Date().toISOString();
+	pending.lastHeartbeat = new Date().toISOString();
+	saveQueue();
 	
 	try {
 		log(LogLevel.INFO, `Processing instruction: ${pending.id}`);
@@ -175,8 +224,6 @@ export async function processNextInstruction(
 				pending.error = 'Failed to send to AI agent';
 			}
 		} else {
-			// If no sendToAgent function, just mark as completed
-			// (useful for testing or manual processing)
 			pending.status = 'completed';
 			pending.result = 'Marked as processed (no agent function provided)';
 		}
@@ -189,6 +236,7 @@ export async function processNextInstruction(
 		log(LogLevel.ERROR, `Error processing instruction ${pending.id}`, { error: pending.error });
 	} finally {
 		processingActive = false;
+		saveQueue();
 	}
 	
 	return true;
@@ -248,6 +296,7 @@ export function getQueueStats(): {
 	processing: number;
 	completed: number;
 	failed: number;
+	stalled: number;
 	autoProcessEnabled: boolean;
 } {
 	return {
@@ -256,6 +305,7 @@ export function getQueueStats(): {
 		processing: instructionQueue.filter(i => i.status === 'processing').length,
 		completed: instructionQueue.filter(i => i.status === 'completed').length,
 		failed: instructionQueue.filter(i => i.status === 'failed').length,
+		stalled: instructionQueue.filter(i => i.status === 'stalled').length,
 		autoProcessEnabled
 	};
 }
@@ -290,4 +340,75 @@ function sortQueueByPriority(): void {
  */
 function generateId(): string {
 	return `ai-queue-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+/**
+ * Record heartbeat for a processing instruction
+ */
+export function recordHeartbeat(id: string): boolean {
+	const item = instructionQueue.find(i => i.id === id);
+	if (!item || (item.status !== 'processing' && item.status !== 'stalled')) return false;
+	item.lastHeartbeat = new Date().toISOString();
+	if (item.status === 'stalled') {
+		item.status = 'processing';
+		log(LogLevel.INFO, `Instruction ${id} recovered from stalled → processing`);
+	}
+	saveQueue();
+	return true;
+}
+
+/**
+ * Get instructions that are not yet finalized (pending + processing + stalled)
+ */
+export function getPendingInstructions(): QueueInstruction[] {
+	return instructionQueue.filter(i => i.status === 'pending' || i.status === 'processing' || i.status === 'stalled');
+}
+
+/**
+ * Get stalled instructions
+ */
+export function getStalledInstructions(): QueueInstruction[] {
+	return instructionQueue.filter(i => i.status === 'stalled');
+}
+
+/**
+ * Stall detection loop — marks processing items as stalled if heartbeat is old,
+ * re-queues stalled items after extended timeout
+ */
+function startStallDetection(): void {
+	if (stallCheckInterval) clearInterval(stallCheckInterval);
+	stallCheckInterval = setInterval(() => {
+		const now = Date.now();
+		let changed = false;
+
+		for (const item of instructionQueue) {
+			if (item.status === 'processing' && item.lastHeartbeat) {
+				const elapsed = now - new Date(item.lastHeartbeat).getTime();
+				if (elapsed > STALL_TIMEOUT_MS) {
+					item.status = 'stalled';
+					log(LogLevel.WARN, `Instruction ${item.id} stalled (no heartbeat for ${Math.round(elapsed / 1000)}s)`);
+					changed = true;
+				}
+			}
+			if (item.status === 'stalled' && item.lastHeartbeat) {
+				const elapsed = now - new Date(item.lastHeartbeat).getTime();
+				if (elapsed > REQUEUE_TIMEOUT_MS) {
+					item.status = 'pending';
+					item.claimedAt = undefined;
+					item.lastHeartbeat = undefined;
+					log(LogLevel.WARN, `Instruction ${item.id} re-queued after ${Math.round(elapsed / 1000)}s stall`);
+					changed = true;
+				}
+			}
+		}
+
+		if (changed) {
+			saveQueue();
+			// Trigger auto-process for any re-queued items
+			if (autoProcessEnabled && autoProcessCallback) {
+				const hasPending = instructionQueue.some(i => i.status === 'pending');
+				if (hasPending) void processNextInstruction(autoProcessCallback);
+			}
+		}
+	}, 60_000); // Check every 60 seconds
 }
