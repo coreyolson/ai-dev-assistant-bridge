@@ -296,6 +296,7 @@ suite('Server HTTP Endpoints Test Suite', () => {
 		test('DELETE /ai/queue/:id should remove instruction', (done) => {
 			// Enqueue test instruction
 			const inst = aiQueue.enqueueInstruction('Test instruction', 'test', 'normal');
+			assert.ok(inst, 'enqueueInstruction returned null');
 
 			const req = http.request({
 				hostname: 'localhost',

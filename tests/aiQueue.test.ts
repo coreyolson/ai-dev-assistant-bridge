@@ -8,6 +8,13 @@
 import * as assert from 'assert';
 import * as aiQueue from '../src/modules/aiQueue';
 
+// Helper: wraps enqueueInstruction with non-null assert (dedup never fires in tests with unique strings)
+function enqueue(...args: Parameters<typeof aiQueue.enqueueInstruction>): aiQueue.QueueInstruction {
+	const result = enqueue(...args);
+	assert.ok(result, 'enqueueInstruction returned null (unexpected dedup)');
+	return result;
+}
+
 suite('AI Queue Module Test Suite', () => {
 	
 	// Reset queue before each test
@@ -23,7 +30,7 @@ suite('AI Queue Module Test Suite', () => {
 
 	suite('Enqueue Operations', () => {
 		test('enqueueInstruction should add instruction to queue', () => {
-			const instruction = aiQueue.enqueueInstruction(
+			const instruction = enqueue(
 				'Test instruction',
 				'test-source',
 				'normal'
@@ -36,17 +43,17 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('enqueueInstruction should generate unique IDs', () => {
-			const inst1 = aiQueue.enqueueInstruction('Test 1', 'source1');
-			const inst2 = aiQueue.enqueueInstruction('Test 2', 'source2');
+			const inst1 = enqueue('Test 1', 'source1');
+			const inst2 = enqueue('Test 2', 'source2');
 
 			assert.notStrictEqual(inst1.id, inst2.id);
 		});
 
 		test('enqueueInstruction should handle all priority levels', () => {
-			const urgent = aiQueue.enqueueInstruction('Urgent', 'src', 'urgent');
-			const high = aiQueue.enqueueInstruction('High', 'src', 'high');
-			const normal = aiQueue.enqueueInstruction('Normal', 'src', 'normal');
-			const low = aiQueue.enqueueInstruction('Low', 'src', 'low');
+			const urgent = enqueue('Urgent', 'src', 'urgent');
+			const high = enqueue('High', 'src', 'high');
+			const normal = enqueue('Normal', 'src', 'normal');
+			const low = enqueue('Low', 'src', 'low');
 
 			assert.strictEqual(urgent.priority, 'urgent');
 			assert.strictEqual(high.priority, 'high');
@@ -56,7 +63,7 @@ suite('AI Queue Module Test Suite', () => {
 
 		test('enqueueInstruction should accept metadata', () => {
 			const metadata = { project: 'test', userId: '123' };
-			const instruction = aiQueue.enqueueInstruction(
+			const instruction = enqueue(
 				'Test',
 				'source',
 				'normal',
@@ -67,23 +74,40 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('enqueueInstruction should use default priority if not specified', () => {
-			const instruction = aiQueue.enqueueInstruction('Test', 'source');
+			const instruction = enqueue('Test', 'source');
 			assert.strictEqual(instruction.priority, 'normal');
+		});
+
+		test('enqueueInstruction should reject duplicate instructions within 60s', () => {
+			const first = aiQueue.enqueueInstruction('Identical instruction', 'source');
+			assert.ok(first, 'First enqueue should succeed');
+
+			const second = aiQueue.enqueueInstruction('Identical instruction', 'source');
+			assert.strictEqual(second, null, 'Duplicate within 60s should return null');
+
+			// Different instruction should still work
+			const third = aiQueue.enqueueInstruction('Different instruction', 'source');
+			assert.ok(third, 'Different instruction should succeed');
+		});
+
+		test('enqueueInstruction should store linkedTaskId', () => {
+			const inst = enqueue('Test linked', 'source', 'normal', undefined, 'task-123');
+			assert.strictEqual(inst.linkedTaskId, 'task-123');
 		});
 	});
 
 	suite('Queue Retrieval', () => {
 		test('getQueue should return all instructions', () => {
-			aiQueue.enqueueInstruction('Test 1', 'source1');
-			aiQueue.enqueueInstruction('Test 2', 'source2');
+			enqueue('Test 1', 'source1');
+			enqueue('Test 2', 'source2');
 
 			const queue = aiQueue.getQueue();
 			assert.strictEqual(queue.length, 2);
 		});
 
 		test('getQueue should filter by status', () => {
-			const inst1 = aiQueue.enqueueInstruction('Test 1', 'source1');
-			const inst2 = aiQueue.enqueueInstruction('Test 2', 'source2');
+			const inst1 = enqueue('Test 1', 'source1');
+			const inst2 = enqueue('Test 2', 'source2');
 
 			// Manually set one to completed for testing
 			const allQueue = aiQueue.getQueue();
@@ -103,7 +127,7 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('getInstruction should return specific instruction by ID', () => {
-			const inst = aiQueue.enqueueInstruction('Test', 'source');
+			const inst = enqueue('Test', 'source');
 			const found = aiQueue.getInstruction(inst.id);
 
 			assert.ok(found);
@@ -118,7 +142,7 @@ suite('AI Queue Module Test Suite', () => {
 
 	suite('Queue Removal', () => {
 		test('removeInstruction should remove instruction by ID', () => {
-			const inst = aiQueue.enqueueInstruction('Test', 'source');
+			const inst = enqueue('Test', 'source');
 			const removed = aiQueue.removeInstruction(inst.id);
 
 			assert.strictEqual(removed, true);
@@ -131,9 +155,9 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('clearProcessed should remove completed and failed instructions', () => {
-			const inst1 = aiQueue.enqueueInstruction('Test 1', 'source');
-			const inst2 = aiQueue.enqueueInstruction('Test 2', 'source');
-			const inst3 = aiQueue.enqueueInstruction('Test 3', 'source');
+			const inst1 = enqueue('Test 1', 'source');
+			const inst2 = enqueue('Test 2', 'source');
+			const inst3 = enqueue('Test 3', 'source');
 
 			// Manually set statuses
 			const queue = aiQueue.getQueue();
@@ -148,8 +172,8 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('clearQueue should remove all instructions', () => {
-			aiQueue.enqueueInstruction('Test 1', 'source');
-			aiQueue.enqueueInstruction('Test 2', 'source');
+			enqueue('Test 1', 'source');
+			enqueue('Test 2', 'source');
 
 			aiQueue.clearQueue();
 
@@ -159,7 +183,7 @@ suite('AI Queue Module Test Suite', () => {
 
 	suite('Queue Processing', () => {
 		test('processNextInstruction should process pending instruction', async () => {
-			aiQueue.enqueueInstruction('Test', 'source');
+			enqueue('Test', 'source');
 
 			let sentMessage = '';
 			const mockSendToAgent = async (message: string) => {
@@ -181,7 +205,7 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('processNextInstruction should mark instruction as completed on success', async () => {
-			const inst = aiQueue.enqueueInstruction('Test', 'source');
+			const inst = enqueue('Test', 'source');
 			const mockSendToAgent = async () => true;
 
 			await aiQueue.processNextInstruction(mockSendToAgent);
@@ -192,7 +216,7 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('processNextInstruction should mark instruction as failed on error', async () => {
-			const inst = aiQueue.enqueueInstruction('Test', 'source');
+			const inst = enqueue('Test', 'source');
 			const mockSendToAgent = async () => false;
 
 			await aiQueue.processNextInstruction(mockSendToAgent);
@@ -203,7 +227,7 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('processNextInstruction should handle exceptions', async () => {
-			const inst = aiQueue.enqueueInstruction('Test', 'source');
+			const inst = enqueue('Test', 'source');
 			const mockSendToAgent = async () => {
 				throw new Error('Test error');
 			};
@@ -217,7 +241,7 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('processNextInstruction handles non-Error thrown values', async () => {
-			const inst = aiQueue.enqueueInstruction('test with string error', 'src');
+			const inst = enqueue('test with string error', 'src');
 			await aiQueue.processNextInstruction(async () => {
 				// eslint-disable-next-line no-throw-literal
 				throw 'String error instead of Error object'; // Non-Error throw
@@ -229,7 +253,7 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('processNextInstruction without sendToAgent should mark as completed', async () => {
-			const inst = aiQueue.enqueueInstruction('Test', 'source');
+			const inst = enqueue('Test', 'source');
 
 			await aiQueue.processNextInstruction();
 
@@ -239,9 +263,9 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('processAllInstructions should process multiple instructions', async () => {
-			aiQueue.enqueueInstruction('Test 1', 'source');
-			aiQueue.enqueueInstruction('Test 2', 'source');
-			aiQueue.enqueueInstruction('Test 3', 'source');
+			enqueue('Test 1', 'source');
+			enqueue('Test 2', 'source');
+			enqueue('Test 3', 'source');
 
 			const mockSendToAgent = async () => true;
 			const processed = await aiQueue.processAllInstructions(mockSendToAgent);
@@ -252,9 +276,9 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('processAllInstructions processes all regardless of failures', async () => {
-			aiQueue.enqueueInstruction('test1', 'src');
-			aiQueue.enqueueInstruction('test2', 'src');
-			aiQueue.enqueueInstruction('test3', 'src');
+			enqueue('test1', 'src');
+			enqueue('test2', 'src');
+			enqueue('test3', 'src');
 			
 			let callCount = 0;
 			const processed = await aiQueue.processAllInstructions(async () => {
@@ -274,10 +298,10 @@ suite('AI Queue Module Test Suite', () => {
 
 	suite('Priority Sorting', () => {
 		test('Queue should be sorted by priority', () => {
-			aiQueue.enqueueInstruction('Low', 'source', 'low');
-			aiQueue.enqueueInstruction('Urgent', 'source', 'urgent');
-			aiQueue.enqueueInstruction('Normal', 'source', 'normal');
-			aiQueue.enqueueInstruction('High', 'source', 'high');
+			enqueue('Low', 'source', 'low');
+			enqueue('Urgent', 'source', 'urgent');
+			enqueue('Normal', 'source', 'normal');
+			enqueue('High', 'source', 'high');
 
 			const queue = aiQueue.getQueue();
 
@@ -289,9 +313,9 @@ suite('AI Queue Module Test Suite', () => {
 
 		test('sorts pending status before completed status', async () => {
 			// Create multiple items and process some to create a mix
-			aiQueue.enqueueInstruction('first', 'src', 'urgent');
-			aiQueue.enqueueInstruction('second', 'src', 'high');
-			aiQueue.enqueueInstruction('third', 'src', 'normal');
+			enqueue('first', 'src', 'urgent');
+			enqueue('second', 'src', 'high');
+			enqueue('third', 'src', 'normal');
 			
 			// Process first two to mark them as completed
 			await aiQueue.processNextInstruction(async () => true);
@@ -299,8 +323,8 @@ suite('AI Queue Module Test Suite', () => {
 			
 			// Now we have: [pending-normal, completed-urgent, completed-high]
 			// Add more pending items to force sorting comparisons
-			aiQueue.enqueueInstruction('fourth', 'src', 'low');
-			aiQueue.enqueueInstruction('fifth', 'src', 'urgent');
+			enqueue('fourth', 'src', 'low');
+			enqueue('fifth', 'src', 'urgent');
 			
 			const queue = aiQueue.getQueue();
 			
@@ -321,15 +345,15 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('Pending instructions should come before completed', () => {
-			const inst1 = aiQueue.enqueueInstruction('First', 'source', 'normal');
-			const inst2 = aiQueue.enqueueInstruction('Second', 'source', 'normal');
+			const inst1 = enqueue('First', 'source', 'normal');
+			const inst2 = enqueue('Second', 'source', 'normal');
 
 			// Manually set first to completed
 			const queue = aiQueue.getQueue();
 			queue[0].status = 'completed';
 
 			// Re-enqueue to trigger sort
-			aiQueue.enqueueInstruction('Third', 'source', 'normal');
+			enqueue('Third', 'source', 'normal');
 
 			const newQueue = aiQueue.getQueue();
 			const pending = newQueue.filter(i => i.status === 'pending');
@@ -357,7 +381,7 @@ suite('AI Queue Module Test Suite', () => {
 		test('setAutoProcess with callback processes pending items', async function() {
 			this.timeout(2000);
 			
-			aiQueue.enqueueInstruction('test', 'src');
+			enqueue('test', 'src');
 			
 			let processed = false;
 			aiQueue.setAutoProcess(true, async () => {
@@ -387,7 +411,7 @@ suite('AI Queue Module Test Suite', () => {
 			await new Promise(resolve => setTimeout(resolve, 100));
 			
 			// Enqueue while auto-process is enabled - should trigger immediately
-			aiQueue.enqueueInstruction('test with auto-process', 'src');
+			enqueue('test with auto-process', 'src');
 			
 			// Wait for processing to complete
 			await new Promise(resolve => setTimeout(resolve, 700));
@@ -399,8 +423,8 @@ suite('AI Queue Module Test Suite', () => {
 
 	suite('Queue Statistics', () => {
 		test('getQueueStats should return accurate counts', () => {
-			aiQueue.enqueueInstruction('Test 1', 'source');
-			aiQueue.enqueueInstruction('Test 2', 'source');
+			enqueue('Test 1', 'source');
+			enqueue('Test 2', 'source');
 
 			const stats = aiQueue.getQueueStats();
 
@@ -412,8 +436,8 @@ suite('AI Queue Module Test Suite', () => {
 		});
 
 		test('getQueueStats should track different statuses', async () => {
-			const inst1 = aiQueue.enqueueInstruction('Test 1', 'source');
-			const inst2 = aiQueue.enqueueInstruction('Test 2', 'source');
+			const inst1 = enqueue('Test 1', 'source');
+			const inst2 = enqueue('Test 2', 'source');
 
 			// Process one
 			const mockSendToAgent = async () => true;
@@ -436,7 +460,7 @@ suite('AI Queue Module Test Suite', () => {
 
 	suite('Context and Metadata', () => {
 		test('processNextInstruction should include context in sendToAgent call', async () => {
-			const inst = aiQueue.enqueueInstruction(
+			const inst = enqueue(
 				'Test',
 				'test-source',
 				'high',
@@ -461,24 +485,24 @@ suite('AI Queue Module Test Suite', () => {
 
 	suite('Edge Cases', () => {
 		test('Should handle empty instruction text', () => {
-			const inst = aiQueue.enqueueInstruction('', 'source');
+			const inst = enqueue('', 'source');
 			assert.strictEqual(inst.instruction, '');
 		});
 
 		test('Should handle very long instruction text', () => {
 			const longText = 'a'.repeat(10000);
-			const inst = aiQueue.enqueueInstruction(longText, 'source');
+			const inst = enqueue(longText, 'source');
 			assert.strictEqual(inst.instruction.length, 10000);
 		});
 
 		test('Should handle special characters in instruction', () => {
 			const special = 'Test with\nnewlines\tand\ttabs"quotes"';
-			const inst = aiQueue.enqueueInstruction(special, 'source');
+			const inst = enqueue(special, 'source');
 			assert.strictEqual(inst.instruction, special);
 		});
 
 		test('Should handle concurrent processing attempts', async () => {
-			aiQueue.enqueueInstruction('Test', 'source');
+			enqueue('Test', 'source');
 
 			const mockSendToAgent = async () => {
 				// Simulate slow processing
@@ -499,10 +523,10 @@ suite('AI Queue Module Test Suite', () => {
 
 		test('processAllInstructions should stop on first failure', async () => {
 			// Enqueue multiple instructions
-			aiQueue.enqueueInstruction('Success 1', 'source');
-			aiQueue.enqueueInstruction('Success 2', 'source');
-			aiQueue.enqueueInstruction('Will fail', 'source');
-			aiQueue.enqueueInstruction('Never processed', 'source');
+			enqueue('Success 1', 'source');
+			enqueue('Success 2', 'source');
+			enqueue('Will fail', 'source');
+			enqueue('Never processed', 'source');
 
 			let callCount = 0;
 			const mockSendToAgent = async (message: string) => {
@@ -526,8 +550,8 @@ suite('AI Queue Module Test Suite', () => {
 
 		test('processAllInstructions should break when processNextInstruction returns false', async () => {
 			// Enqueue instructions
-			aiQueue.enqueueInstruction('Test 1', 'source');
-			aiQueue.enqueueInstruction('Test 2', 'source');
+			enqueue('Test 1', 'source');
+			enqueue('Test 2', 'source');
 
 			let firstCall = true;
 			const mockSendToAgent = async () => {

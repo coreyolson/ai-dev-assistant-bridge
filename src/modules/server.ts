@@ -141,6 +141,11 @@ export function startServer(
 		}
 	});
 
+	// Wire up linked task auto-completion: when a queue item with a linkedTaskId completes, mark the task done
+	aiQueue.setLinkedTaskCallback(async (taskId: string) => {
+		await taskManager.updateTaskStatus(context, taskId, 'completed');
+	});
+
 	return server;
 }
 
@@ -261,14 +266,14 @@ async function handleRequest(
 		await handleRestartApp(req, res);
 	} else if (url === '/responses' && method === 'POST') {
 		await handlePostResponse(req, res);
-	} else if (url === '/responses' && method === 'GET') {
+	} else if ((url === '/responses' || url.startsWith('/responses?')) && method === 'GET') {
 		handleGetResponses(req, res);
 	} else if (url === '/responses/stats' && method === 'GET') {
 		handleResponseStats(res);
 	} else if (url === '/ai/queue' && method === 'GET') {
 		handleGetQueue(res);
 	} else if (url === '/ai/queue' && method === 'POST') {
-		await handleEnqueueInstruction(req, res);
+		await handleEnqueueInstruction(req, res, context);
 	} else if (url === '/ai/queue/process' && method === 'POST') {
 		await handleProcessQueue(res, sendToAgent);
 	} else if (url === '/ai/queue/stats' && method === 'GET') {
@@ -727,8 +732,10 @@ function handleGetQueue(res: http.ServerResponse): void {
 
 /**
  * Handle POST /ai/queue - Enqueue a new instruction
+ * Accepts optional `title` and `category` to create a linked persistent task.
+ * One dispatch = one queue item + one linked task (if title provided).
  */
-async function handleEnqueueInstruction(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+async function handleEnqueueInstruction(req: http.IncomingMessage, res: http.ServerResponse, context: vscode.ExtensionContext): Promise<void> {
 	try {
 		const body = await readRequestBody(req);
 		const data = JSON.parse(body);
@@ -742,14 +749,38 @@ async function handleEnqueueInstruction(req: http.IncomingMessage, res: http.Ser
 		const source = data.source || 'external-api';
 		const priority = data.priority || 'normal';
 		const metadata = data.metadata || {};
+
+		// If title provided, create a linked persistent task first
+		let linkedTaskId: string | undefined;
+		if (data.title && typeof data.title === 'string') {
+			const category = ['feature', 'bug', 'improvement', 'other'].includes(data.category) ? data.category : 'improvement';
+			const task = await taskManager.addTask(context, data.title.trim(), data.instruction, category);
+			linkedTaskId = task.id;
+			log(LogLevel.INFO, `Created linked task ${task.id} for queue instruction`, { title: data.title });
+		}
 		
-		const queueItem = aiQueue.enqueueInstruction(data.instruction, source, priority, metadata);
+		const queueItem = aiQueue.enqueueInstruction(data.instruction, source, priority, metadata, linkedTaskId);
+
+		if (!queueItem) {
+			// Dedup rejected — clean up the linked task if we created one
+			if (linkedTaskId) {
+				try { await taskManager.removeTask(context, linkedTaskId); } catch { /* ignore */ }
+			}
+			res.writeHead(409, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({
+				success: false,
+				message: 'Duplicate instruction rejected (same instruction within 60s window)',
+				duplicate: true
+			}));
+			return;
+		}
 		
 		res.writeHead(201, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ 
 			success: true, 
 			message: 'Instruction enqueued',
-			queueItem 
+			queueItem,
+			linkedTaskId
 		}));
 	} catch (error) {
 		res.writeHead(500, { 'Content-Type': 'application/json' });

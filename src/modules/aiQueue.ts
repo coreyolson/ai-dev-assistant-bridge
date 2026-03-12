@@ -13,6 +13,7 @@
  */
 
 import * as vscode from 'vscode';
+import * as crypto from 'crypto';
 import { log } from './logging';
 import { LogLevel } from './types';
 
@@ -31,6 +32,7 @@ export interface QueueInstruction {
 	result?: string;
 	error?: string;
 	metadata?: Record<string, unknown>;
+	linkedTaskId?: string;
 }
 
 /**
@@ -40,11 +42,16 @@ let instructionQueue: QueueInstruction[] = [];
 let processingActive = false;
 let autoProcessEnabled = false;
 let autoProcessCallback: ((message: string, context?: unknown) => Promise<boolean>) | undefined;
+let linkedTaskCallback: ((taskId: string) => Promise<void>) | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
 let stallCheckInterval: ReturnType<typeof setInterval> | undefined;
 
 const STALL_TIMEOUT_MS = 5 * 60 * 1000;    // 5 minutes with no heartbeat → stalled
 const REQUEUE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes stalled → re-queue
+const DEDUP_WINDOW_MS = 60 * 1000;         // Reject duplicate instructions within 60s
+
+// Track recent instruction hashes for dedup
+const recentInstructionHashes = new Map<string, number>();
 
 /**
  * Initialize queue with persistence context
@@ -93,8 +100,24 @@ export function enqueueInstruction(
 	instruction: string,
 	source: string,
 	priority: 'low' | 'normal' | 'high' | 'urgent' = 'normal',
-	metadata?: Record<string, unknown>
-): QueueInstruction {
+	metadata?: Record<string, unknown>,
+	linkedTaskId?: string
+): QueueInstruction | null {
+	// Dedup: reject identical instructions within 60s window
+	const hash = crypto.createHash('sha256').update(instruction).digest('hex').slice(0, 16);
+	const now = Date.now();
+	const lastSeen = recentInstructionHashes.get(hash);
+	if (lastSeen && (now - lastSeen) < DEDUP_WINDOW_MS) {
+		log(LogLevel.WARN, `Rejected duplicate instruction within ${DEDUP_WINDOW_MS / 1000}s window`, { hash, source });
+		return null;
+	}
+	recentInstructionHashes.set(hash, now);
+
+	// Prune old dedup entries
+	for (const [h, ts] of recentInstructionHashes) {
+		if (now - ts > DEDUP_WINDOW_MS) recentInstructionHashes.delete(h);
+	}
+
 	const queueItem: QueueInstruction = {
 		id: generateId(),
 		instruction,
@@ -102,7 +125,8 @@ export function enqueueInstruction(
 		source,
 		timestamp: new Date().toISOString(),
 		status: 'pending',
-		metadata
+		metadata,
+		linkedTaskId
 	};
 	
 	instructionQueue.push(queueItem);
@@ -230,6 +254,16 @@ export async function processNextInstruction(
 		
 		log(LogLevel.INFO, `Instruction ${pending.status}: ${pending.id}`);
 		
+		// Auto-complete linked task if queue item succeeded
+		if (pending.status === 'completed' && pending.linkedTaskId && linkedTaskCallback) {
+			try {
+				await linkedTaskCallback(pending.linkedTaskId);
+				log(LogLevel.INFO, `Auto-completed linked task ${pending.linkedTaskId} for queue item ${pending.id}`);
+			} catch (err) {
+				log(LogLevel.WARN, `Failed to auto-complete linked task ${pending.linkedTaskId}`, { error: err instanceof Error ? err.message : String(err) });
+			}
+		}
+		
 	} catch (error) {
 		pending.status = 'failed';
 		pending.error = error instanceof Error ? error.message : String(error);
@@ -284,6 +318,13 @@ export function setAutoProcess(
 		// Start processing if there are pending instructions
 		void processAllInstructions(sendToAgent);
 	}
+}
+
+/**
+ * Set callback for auto-completing linked tasks when queue items complete
+ */
+export function setLinkedTaskCallback(cb: (taskId: string) => Promise<void>): void {
+	linkedTaskCallback = cb;
 }
 
 /**
