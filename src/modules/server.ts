@@ -146,6 +146,17 @@ export function startServer(
 		await taskManager.updateTaskStatus(context, taskId, 'completed');
 	});
 
+	// Periodic sweep: mark stale in-progress tasks as failed (every 2 minutes)
+	const sweepInterval = setInterval(async () => {
+		try {
+			const swept = await taskManager.sweepStaleTasks(context);
+			if (swept > 0) {
+				log(LogLevel.WARN, `Task sweep: marked ${swept} stale task(s) as failed`);
+			}
+		} catch { /* best-effort */ }
+	}, 2 * 60 * 1000);
+	context.subscriptions.push({ dispose: () => clearInterval(sweepInterval) });
+
 	return server;
 }
 
@@ -256,6 +267,10 @@ async function handleRequest(
 		await handleGetTasks(res, context);
 	} else if (url === '/tasks' && method === 'POST') {
 		await handleCreateTask(req, res, context);
+	} else if (url === '/tasks/status' && method === 'GET') {
+		await handleQueueStatus(res, context);
+	} else if (url.startsWith('/tasks/status/') && method === 'GET') {
+		await handleTaskStatusById(res, context, url);
 	} else if (url.startsWith('/tasks/') && method === 'PUT') {
 		await handleUpdateTask(req, res, context, url);
 	} else if (url.startsWith('/tasks/') && method === 'DELETE') {
@@ -327,13 +342,24 @@ POST /tasks
 PUT /tasks/:id
     Update a task status
     Body: {
-        "status": "pending|in-progress|completed"
+        "status": "pending|in-progress|completed|failed",
+        "error": "optional error message (for failed)",
+        "summary": "optional summary (for completed)"
     }
     Response: { success: true }
 
 DELETE /tasks/:id
     Delete a task
     Response: { success: true }
+
+GET /tasks/status
+    Consolidated queue status — pending, in-progress, completed (24h), failed
+    Auto-sweeps stale in-progress tasks (>10min) to failed
+    Response: { pending: {...}, inProgress: {...}, completed: {...}, failed: {...} }
+
+GET /tasks/status/:id
+    Single task lookup with computed age/duration
+    Response: Task object with ageSeconds, durationSeconds (if in-progress)
 
 POST /feedback
     Send feedback to AI agent
@@ -532,16 +558,19 @@ async function handleUpdateTask(
 	try {
 		const data = JSON.parse(body);
 		
-		if (!data.status || !['pending', 'in-progress', 'completed'].includes(data.status)) {
+		if (!data.status || !['pending', 'in-progress', 'completed', 'failed'].includes(data.status)) {
 			res.writeHead(400, { 'Content-Type': 'application/json' });
 			res.end(JSON.stringify({ 
 				error: 'Invalid or missing "status" field', 
-				valid: ['pending', 'in-progress', 'completed'] 
+				valid: ['pending', 'in-progress', 'completed', 'failed'] 
 			}));
 			return;
 		}
 
-		await taskManager.updateTaskStatus(context, taskId, data.status);
+		await taskManager.updateTaskStatus(context, taskId, data.status, {
+			error: data.error,
+			summary: data.summary,
+		});
 		
 		log(LogLevel.INFO, 'Task updated via API', { taskId, status: data.status });
 		
@@ -580,6 +609,106 @@ async function handleDeleteTask(
 		log(LogLevel.ERROR, 'Failed to delete task', getErrorMessage(error));
 		res.writeHead(500, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ error: 'Failed to delete task' }));
+	}
+}
+
+/**
+ * Handle GET /tasks/status - Consolidated queue status view
+ */
+async function handleQueueStatus(res: http.ServerResponse, context: vscode.ExtensionContext): Promise<void> {
+	try {
+		// Sweep stale tasks before reporting
+		const swept = await taskManager.sweepStaleTasks(context);
+		if (swept > 0) {
+			log(LogLevel.WARN, `Swept ${swept} stale task(s) to failed`);
+		}
+
+		const tasks = await taskManager.getTasks(context);
+		const now = Date.now();
+		const h24 = 24 * 60 * 60 * 1000;
+
+		const pending = tasks
+			.filter(t => t.status === 'pending')
+			.map(t => ({
+				id: t.id,
+				title: t.title,
+				category: t.category,
+				priority: (t as unknown as Record<string, unknown>).priority ?? 'normal',
+				ageSeconds: Math.round((now - new Date(t.createdAt).getTime()) / 1000),
+				createdAt: t.createdAt,
+			}));
+
+		const inProgress = tasks
+			.filter(t => t.status === 'in-progress')
+			.map(t => ({
+				id: t.id,
+				title: t.title,
+				category: t.category,
+				startedAt: t.startedAt ?? t.updatedAt,
+				durationSeconds: Math.round((now - new Date(t.startedAt ?? t.updatedAt).getTime()) / 1000),
+			}));
+
+		const completed = tasks
+			.filter(t => t.status === 'completed' && t.completedAt && now - new Date(t.completedAt).getTime() < h24)
+			.map(t => ({
+				id: t.id,
+				title: t.title,
+				completedAt: t.completedAt,
+				summary: t.summary,
+			}));
+
+		const failed = tasks
+			.filter(t => t.status === 'failed')
+			.map(t => ({
+				id: t.id,
+				title: t.title,
+				error: t.error,
+				completedAt: t.completedAt,
+			}));
+
+		res.writeHead(200, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({
+			pending: { count: pending.length, tasks: pending },
+			inProgress: { count: inProgress.length, tasks: inProgress },
+			completed: { count: completed.length, tasks: completed },
+			failed: { count: failed.length, tasks: failed },
+			total: tasks.length,
+			swept,
+		}, null, 2));
+	} catch (error) {
+		log(LogLevel.ERROR, 'Failed to get queue status', getErrorMessage(error));
+		res.writeHead(500, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ error: 'Failed to get queue status' }));
+	}
+}
+
+/**
+ * Handle GET /tasks/status/:taskId - Single task lookup
+ */
+async function handleTaskStatusById(res: http.ServerResponse, context: vscode.ExtensionContext, url: string): Promise<void> {
+	const taskId = url.split('/')[3];
+	try {
+		const tasks = await taskManager.getTasks(context);
+		const task = tasks.find(t => t.id === taskId);
+		if (!task) {
+			res.writeHead(404, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Not found', taskId }));
+			return;
+		}
+		const now = Date.now();
+		const enriched = {
+			...task,
+			ageSeconds: Math.round((now - new Date(task.createdAt).getTime()) / 1000),
+			...(task.status === 'in-progress' ? {
+				durationSeconds: Math.round((now - new Date(task.startedAt ?? task.updatedAt).getTime()) / 1000),
+			} : {}),
+		};
+		res.writeHead(200, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify(enriched, null, 2));
+	} catch (error) {
+		log(LogLevel.ERROR, 'Failed to get task status', getErrorMessage(error));
+		res.writeHead(500, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ error: 'Failed to get task status' }));
 	}
 }
 

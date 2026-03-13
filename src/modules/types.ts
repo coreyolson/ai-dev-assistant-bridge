@@ -9,10 +9,14 @@ export interface Task {
 	id: string;
 	title: string;
 	description: string;
-	status: 'pending' | 'in-progress' | 'completed';
+	status: 'pending' | 'in-progress' | 'completed' | 'failed';
 	category: 'bug' | 'feature' | 'improvement' | 'documentation' | 'testing' | 'other';
 	createdAt: string;
 	updatedAt: string;
+	startedAt?: string;
+	completedAt?: string;
+	error?: string;
+	summary?: string;
 }
 
 /**

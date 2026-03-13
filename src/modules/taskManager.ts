@@ -156,15 +156,50 @@ export async function addTask(
 export async function updateTaskStatus(
 	context: vscode.ExtensionContext,
 	taskId: string,
-	status: Task['status']
+	status: Task['status'],
+	opts?: { error?: string; summary?: string }
 ): Promise<void> {
 	const tasks = await getTasks(context);
 	const task = tasks.find(t => t.id === taskId);
 	if (task) {
 		task.status = status;
 		task.updatedAt = new Date().toISOString();
+		if (status === 'in-progress' && !task.startedAt) {
+			task.startedAt = new Date().toISOString();
+		}
+		if (status === 'completed') {
+			task.completedAt = new Date().toISOString();
+			if (opts?.summary) { task.summary = opts.summary; }
+		}
+		if (status === 'failed') {
+			task.completedAt = new Date().toISOString();
+			if (opts?.error) { task.error = opts.error; }
+		}
 		await saveTasks(context, tasks);
 	}
+}
+
+/**
+ * Sweep tasks that have been in-progress for too long and mark them failed.
+ */
+export async function sweepStaleTasks(context: vscode.ExtensionContext, timeoutMs: number = 10 * 60 * 1000): Promise<number> {
+	const tasks = await getTasks(context);
+	const now = Date.now();
+	let swept = 0;
+	for (const task of tasks) {
+		if (task.status === 'in-progress') {
+			const ref = task.startedAt || task.updatedAt;
+			if (now - new Date(ref).getTime() > timeoutMs) {
+				task.status = 'failed';
+				task.error = `timeout: no update for ${Math.round(timeoutMs / 60000)} minutes`;
+				task.completedAt = new Date().toISOString();
+				task.updatedAt = new Date().toISOString();
+				swept++;
+			}
+		}
+	}
+	if (swept > 0) { await saveTasks(context, tasks); }
+	return swept;
 }
 
 /**
