@@ -26,11 +26,12 @@ let extensionContext: vscode.ExtensionContext | undefined;
 
 /**
  * Get configuration with proper scope for window isolation
- * This ensures each VS Code window can have independent settings
+ * In multi-root workspaces, resource URI is required for inspect()
+ * to correctly populate workspaceFolderValue.
  */
 function getConfig(): vscode.WorkspaceConfiguration {
-	// Get workspace-specific configuration
-	return vscode.workspace.getConfiguration('aiDevAssistantBridge');
+	const resource = vscode.workspace.workspaceFolders?.[0]?.uri;
+	return vscode.workspace.getConfiguration('aiDevAssistantBridge', resource);
 }
 
 /**
@@ -79,8 +80,11 @@ export async function activate(context: vscode.ExtensionContext) {
 	
 	const configuredPort = config.get<number>('port');
 	const portInspect = config.inspect<number>('port');
+	log(LogLevel.INFO, `Port config debug: configured=${configuredPort}, default=${portInspect?.defaultValue}, workspace=${portInspect?.workspaceValue}, folder=${portInspect?.workspaceFolderValue}, global=${portInspect?.globalValue}`);
 	const hasExplicitPort = portInspect?.workspaceValue !== undefined
-		|| portInspect?.workspaceFolderValue !== undefined;
+		|| portInspect?.workspaceFolderValue !== undefined
+		|| (configuredPort !== undefined && configuredPort !== portInspect?.defaultValue);
+	log(LogLevel.INFO, `Port decision: hasExplicit=${hasExplicitPort}, will use ${hasExplicitPort ? configuredPort : 'auto-discover'}`);
 
 	if (hasExplicitPort && configuredPort) {
 		// User pinned a port in workspace settings — honor it
