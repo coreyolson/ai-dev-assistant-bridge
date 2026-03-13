@@ -17,6 +17,7 @@ import { LogLevel } from './types';
 import * as taskManager from './taskManager';
 import * as aiQueue from './aiQueue';
 import * as responseQueue from './responseQueue';
+import * as webhooks from './webhooks';
 import { validatePort } from './numberValidation';
 
 let server: http.Server | undefined;
@@ -144,6 +145,7 @@ export function startServer(
 	// Wire up linked task auto-completion: when a queue item with a linkedTaskId completes, mark the task done
 	aiQueue.setLinkedTaskCallback(async (taskId: string) => {
 		await taskManager.updateTaskStatus(context, taskId, 'completed');
+		webhooks.fireWebhookEvent('task.completed', { taskId });
 	});
 
 	// Periodic sweep: mark stale in-progress tasks as failed (every 2 minutes)
@@ -303,6 +305,12 @@ async function handleRequest(
 		handleDeleteFromQueue(res, url);
 	} else if (url === '/ai/queue/clear' && method === 'POST') {
 		handleClearQueue(res);
+	} else if (url === '/webhooks' && method === 'GET') {
+		handleListWebhooks(res);
+	} else if (url === '/webhooks/register' && method === 'POST') {
+		await handleRegisterWebhook(req, res);
+	} else if (url === '/webhooks/unregister' && method === 'POST') {
+		await handleUnregisterWebhook(req, res);
 	} else {
 		res.writeHead(404, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ error: 'Not found', message: `Unknown endpoint: ${method} ${url}` }));
@@ -1022,6 +1030,9 @@ async function handlePostResponse(req: http.IncomingMessage, res: http.ServerRes
 			Array.isArray(data.nextQuestions) ? data.nextQuestions : undefined
 		);
 
+		// Fire webhook for response creation
+		webhooks.fireWebhookEvent('response.created', { response });
+
 		res.writeHead(201, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ success: true, response }));
 	} catch (error) {
@@ -1144,5 +1155,80 @@ function handleQueueHeartbeat(res: http.ServerResponse, url: string): void {
 	} catch (error) {
 		res.writeHead(500, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ error: 'Internal server error', message: getErrorMessage(error) }));
+	}
+}
+
+// ─── Webhook Handlers ───────────────────────────────────────────────────────
+
+function handleListWebhooks(res: http.ServerResponse): void {
+	const list = webhooks.listWebhooks();
+	res.writeHead(200, { 'Content-Type': 'application/json' });
+	res.end(JSON.stringify({ webhooks: list, count: list.length }));
+}
+
+async function handleRegisterWebhook(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+	try {
+		const body = await readRequestBody(req);
+		const data = JSON.parse(body);
+
+		if (!data.url || typeof data.url !== 'string') {
+			res.writeHead(400, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Missing or invalid "url" field' }));
+			return;
+		}
+
+		// Validate URL format
+		try {
+			const parsed = new URL(data.url);
+			if (!['http:', 'https:'].includes(parsed.protocol)) {
+				res.writeHead(400, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({ error: 'URL must use http or https protocol' }));
+				return;
+			}
+		} catch {
+			res.writeHead(400, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Invalid URL format' }));
+			return;
+		}
+
+		const events = Array.isArray(data.events) ? data.events : ['*'];
+		const registration = webhooks.registerWebhook(data.url, events);
+
+		res.writeHead(201, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ success: true, webhook: registration }));
+	} catch (error) {
+		if (error instanceof SyntaxError) {
+			res.writeHead(400, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Invalid JSON format' }));
+		} else {
+			res.writeHead(500, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Failed to register webhook' }));
+		}
+	}
+}
+
+async function handleUnregisterWebhook(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+	try {
+		const body = await readRequestBody(req);
+		const data = JSON.parse(body);
+
+		const key = data.url || data.id;
+		if (!key || typeof key !== 'string') {
+			res.writeHead(400, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Provide "url" or "id" to unregister' }));
+			return;
+		}
+
+		const removed = webhooks.unregisterWebhook(key);
+		res.writeHead(200, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ success: removed }));
+	} catch (error) {
+		if (error instanceof SyntaxError) {
+			res.writeHead(400, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Invalid JSON format' }));
+		} else {
+			res.writeHead(500, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Failed to unregister webhook' }));
+		}
 	}
 }
