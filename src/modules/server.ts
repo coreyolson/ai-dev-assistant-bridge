@@ -984,15 +984,15 @@ async function handleEnqueueInstruction(req: http.IncomingMessage, res: http.Ser
 		const queueItem = aiQueue.enqueueInstruction(data.instruction, source, priority, metadata, linkedTaskId);
 
 		if (!queueItem) {
-			// Dedup rejected — clean up the linked task if we created one
+			// Dedup or overflow rejected — clean up the linked task if we created one
 			if (linkedTaskId) {
 				try { await taskManager.removeTask(context, linkedTaskId); } catch { /* ignore */ }
 			}
-			res.writeHead(409, { 'Content-Type': 'application/json' });
+			res.writeHead(429, { 'Content-Type': 'application/json' });
 			res.end(JSON.stringify({
 				success: false,
-				message: 'Duplicate instruction rejected (same instruction within 60s window)',
-				duplicate: true
+				message: 'Instruction rejected (duplicate within dedup window or queue overflow)',
+				rejected: true
 			}));
 			return;
 		}

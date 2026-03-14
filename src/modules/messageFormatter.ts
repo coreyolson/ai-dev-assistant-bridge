@@ -67,7 +67,7 @@ export function formatFeedbackMessage(feedbackMessage: string, appContext?: unkn
 	fullMessage += `• If a feature → draft implementation plan\n`;
 	fullMessage += `• Apply and commit changes\n`;
 	fullMessage += `• Use the **report_progress** tool during long tasks to provide visibility (taskId: \`${queueId}\`)\n`;
-	fullMessage += `• When done, use the **report_completion** tool to report results back (taskId: \`${queueId}\`, status, summary, findings, blockers)\n`;
+	fullMessage += `• When done, use the **report_completion** tool to report results back (taskId: \`${queueId}\`, status, summary, findings, blockers, nextQuestions)\n`;
 
 	return fullMessage;
 }

@@ -35,6 +35,7 @@ export interface QueueInstruction {
 	error?: string;
 	metadata?: Record<string, unknown>;
 	linkedTaskId?: string;
+	requeueCount?: number;
 }
 
 /**
@@ -50,7 +51,9 @@ let stallCheckInterval: ReturnType<typeof setInterval> | undefined;
 
 const STALL_TIMEOUT_MS = 5 * 60 * 1000;    // 5 minutes with no heartbeat → stalled
 const REQUEUE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes stalled → re-queue
-const DEDUP_WINDOW_MS = 60 * 1000;         // Reject duplicate instructions within 60s
+const DEDUP_WINDOW_MS = 10 * 60 * 1000;    // Reject duplicate instructions within 10min
+const MAX_QUEUE_SIZE = 50;                 // Reject enqueue when queue exceeds this
+const MAX_REQUEUE_COUNT = 3;               // Permanently fail after this many re-queues
 
 // Track recent instruction hashes for dedup
 const recentInstructionHashes = new Map<string, number>();
@@ -105,7 +108,7 @@ export function enqueueInstruction(
 	metadata?: Record<string, unknown>,
 	linkedTaskId?: string
 ): QueueInstruction | null {
-	// Dedup: reject identical instructions within 60s window
+	// Dedup: reject identical instructions within dedup window
 	const hash = crypto.createHash('sha256').update(instruction).digest('hex').slice(0, 16);
 	const now = Date.now();
 	const lastSeen = recentInstructionHashes.get(hash);
@@ -113,6 +116,14 @@ export function enqueueInstruction(
 		log(LogLevel.WARN, `Rejected duplicate instruction within ${DEDUP_WINDOW_MS / 1000}s window`, { hash, source });
 		return null;
 	}
+
+	// Overflow protection: reject when active queue is too large
+	const activeCount = instructionQueue.filter(i => i.status === 'pending' || i.status === 'processing' || i.status === 'stalled').length;
+	if (activeCount >= MAX_QUEUE_SIZE) {
+		log(LogLevel.ERROR, `Queue overflow: ${activeCount} active items (max ${MAX_QUEUE_SIZE}). Rejecting instruction.`, { source });
+		return null;
+	}
+
 	recentInstructionHashes.set(hash, now);
 
 	// Prune old dedup entries
@@ -304,7 +315,12 @@ export async function processNextInstruction(
 			[pending.error],
 		);
 	} finally {
-		processingActive = false;
+		// Only release the processing gate when the task won't continue running.
+		// Tasks that are successfully sent to the agent stay 'processing' until
+		// completeQueueItem() is called (via report_completion / POST /responses).
+		if (pending.status === 'failed' || pending.status === 'completed') {
+			processingActive = false;
+		}
 		saveQueue();
 	}
 	
@@ -378,6 +394,9 @@ export async function completeQueueItem(
 
 	item.status = status;
 	if (result) item.result = result;
+
+	// Release the serial processing gate so the next pending item can start
+	processingActive = false;
 	saveQueue();
 	log(LogLevel.INFO, `Queue item ${queueId} externally marked ${status}`);
 
@@ -388,6 +407,12 @@ export async function completeQueueItem(
 		} catch (err) {
 			log(LogLevel.WARN, `Failed to auto-complete linked task ${item.linkedTaskId}`, { error: err instanceof Error ? err.message : String(err) });
 		}
+	}
+
+	// Kick off next pending item now that the gate is released
+	if (autoProcessEnabled && autoProcessCallback) {
+		const hasPending = instructionQueue.some(i => i.status === 'pending');
+		if (hasPending) void processNextInstruction(autoProcessCallback);
 	}
 
 	return item;
@@ -494,16 +519,52 @@ function startStallDetection(): void {
 				if (elapsed > STALL_TIMEOUT_MS) {
 					item.status = 'stalled';
 					log(LogLevel.WARN, `Instruction ${item.id} stalled (no heartbeat for ${Math.round(elapsed / 1000)}s)`);
+					webhooks.fireWebhookEvent('task.stalled', {
+						queueId: item.id,
+						linkedTaskId: item.linkedTaskId,
+						source: item.source,
+						instruction: item.instruction.slice(0, 200),
+						stalledAt: new Date().toISOString(),
+						requeueCount: item.requeueCount ?? 0,
+					});
 					changed = true;
 				}
 			}
 			if (item.status === 'stalled' && item.lastHeartbeat) {
 				const elapsed = now - new Date(item.lastHeartbeat).getTime();
 				if (elapsed > REQUEUE_TIMEOUT_MS) {
-					item.status = 'pending';
-					item.claimedAt = undefined;
-					item.lastHeartbeat = undefined;
-					log(LogLevel.WARN, `Instruction ${item.id} re-queued after ${Math.round(elapsed / 1000)}s stall`);
+					const count = (item.requeueCount ?? 0) + 1;
+					item.requeueCount = count;
+
+					if (count > MAX_REQUEUE_COUNT) {
+						// Permanently fail after too many re-queues
+						item.status = 'failed';
+						item.error = `Permanently failed after ${count - 1} re-queue attempts`;
+						processingActive = false;
+						log(LogLevel.ERROR, `Instruction ${item.id} permanently failed after ${count - 1} re-queues`);
+						webhooks.fireWebhookEvent('task.failed', {
+							queueId: item.id,
+							linkedTaskId: item.linkedTaskId,
+							source: item.source,
+							instruction: item.instruction.slice(0, 200),
+							failedAt: new Date().toISOString(),
+							reason: item.error,
+							requeueCount: count - 1,
+						});
+						responseQueue.addResponse(
+							item.id,
+							'failed',
+							item.error,
+							undefined,
+							[item.error],
+						);
+					} else {
+						item.status = 'pending';
+						item.claimedAt = undefined;
+						item.lastHeartbeat = undefined;
+						processingActive = false;
+						log(LogLevel.WARN, `Instruction ${item.id} re-queued (attempt ${count}/${MAX_REQUEUE_COUNT}) after ${Math.round(elapsed / 1000)}s stall`);
+					}
 					changed = true;
 				}
 			}

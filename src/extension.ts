@@ -17,6 +17,7 @@ import * as statusBar from './modules/statusBar';
 import * as commands from './modules/commands';
 import * as aiQueue from './modules/aiQueue';
 import * as webhooksMod from './modules/webhooks';
+import * as responseQueueMod from './modules/responseQueue';
 import { formatCountdown } from './modules/timeFormatting';
 import { ReportCompletionTool, ReportProgressTool } from './modules/lmTools';
 
@@ -230,6 +231,9 @@ function startFeedbackServer(context: vscode.ExtensionContext) {
 
 	// Initialize queue persistence and stall detection
 	aiQueue.initQueue(context);
+
+	// Initialize response queue persistence
+	responseQueueMod.initResponseQueue(context);
 
 	// Enable auto-processing of AI queue so external dispatches (e.g. Goltana) get sent to Copilot immediately
 	aiQueue.setAutoProcess(true, chatIntegration.sendToAgent);

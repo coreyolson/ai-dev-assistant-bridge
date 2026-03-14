@@ -11,6 +11,7 @@
 
 import { log } from './logging';
 import { LogLevel } from './types';
+import type * as vscode from 'vscode';
 
 /**
  * Structured response from VS Code back to the task submitter
@@ -27,8 +28,35 @@ export interface TaskResponse {
 	read: boolean;
 }
 
-/** In-memory response queue */
+/** In-memory response queue — backed by globalState persistence */
 let responseQueue: TaskResponse[] = [];
+let extensionContext: vscode.ExtensionContext | undefined;
+
+const STORAGE_KEY = 'responseQueue';
+
+/**
+ * Initialize response queue with persistence context
+ */
+export function initResponseQueue(context: vscode.ExtensionContext): void {
+	extensionContext = context;
+	loadResponses();
+}
+
+/** Persist queue to globalState */
+function saveResponses(): void {
+	if (!extensionContext) return;
+	extensionContext.globalState.update(STORAGE_KEY, responseQueue);
+}
+
+/** Load queue from globalState */
+function loadResponses(): void {
+	if (!extensionContext) return;
+	const saved = extensionContext.globalState.get<TaskResponse[]>(STORAGE_KEY);
+	if (Array.isArray(saved) && saved.length > 0) {
+		responseQueue = saved;
+		log(LogLevel.INFO, `Loaded ${responseQueue.length} responses from persistent storage`);
+	}
+}
 
 /**
  * Add a response to the queue
@@ -54,6 +82,7 @@ export function addResponse(
 	};
 
 	responseQueue.push(response);
+	saveResponses();
 	log(LogLevel.INFO, `Response queued for task ${taskId}`, { id: response.id, status });
 	return response;
 }
@@ -66,6 +95,7 @@ export function getPendingResponses(): TaskResponse[] {
 	for (const r of pending) {
 		r.read = true;
 	}
+	saveResponses();
 	log(LogLevel.INFO, `Returned ${pending.length} pending responses`);
 	return pending;
 }
@@ -91,6 +121,7 @@ export function clearOldResponses(maxAgeMs: number = 24 * 60 * 60 * 1000): numbe
 	);
 	const cleared = before - responseQueue.length;
 	if (cleared > 0) {
+		saveResponses();
 		log(LogLevel.INFO, `Cleared ${cleared} old responses`);
 	}
 	return cleared;

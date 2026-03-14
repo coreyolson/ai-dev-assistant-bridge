@@ -188,6 +188,10 @@ export async function sendToAgent(feedbackMessage: string, appContext?: unknown)
 			
 			if (model) {
 				outputChannel.appendLine('✅ AI Agent processing request...');
+
+				// Open a NEW chat session so dispatched tasks don't contaminate the user's active conversation.
+				// Once submitted, Copilot processes the request regardless of which tab the user navigates to.
+				await vscode.commands.executeCommand('workbench.action.chat.newChat');
 				
 				// Send directly to chat without the @agent prefix
 				await vscode.commands.executeCommand('workbench.action.chat.open', {
