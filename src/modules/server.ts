@@ -159,6 +159,14 @@ export function startServer(
 	}, 2 * 60 * 1000);
 	context.subscriptions.push({ dispose: () => clearInterval(sweepInterval) });
 
+	// Periodic response cleanup: remove read responses older than 24h (every hour)
+	const responseCleanupInterval = setInterval(() => {
+		try {
+			responseQueue.clearOldResponses();
+		} catch { /* best-effort */ }
+	}, 60 * 60 * 1000);
+	context.subscriptions.push({ dispose: () => clearInterval(responseCleanupInterval) });
+
 	return server;
 }
 
@@ -263,7 +271,12 @@ async function handleRequest(
 	log(LogLevel.DEBUG, `${method} ${url}`);
 
 	// Route handling
-	if (url === '/help' || url === '/') {
+	if (url === '/health') {
+		handleHealth(res, port);
+	} else if (url === '/port') {
+		res.writeHead(200, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ port }));
+	} else if (url === '/help' || url === '/') {
 		handleHelp(res, port);
 	} else if (url === '/tasks' && method === 'GET') {
 		await handleGetTasks(res, context);
@@ -307,6 +320,8 @@ async function handleRequest(
 		handleClearQueue(res);
 	} else if (url === '/webhooks' && method === 'GET') {
 		handleListWebhooks(res);
+	} else if (url === '/webhooks/deliveries' && method === 'GET') {
+		handleGetDeliveries(res);
 	} else if (url === '/webhooks/register' && method === 'POST') {
 		await handleRegisterWebhook(req, res);
 	} else if (url === '/webhooks/unregister' && method === 'POST') {
@@ -315,6 +330,24 @@ async function handleRequest(
 		res.writeHead(404, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ error: 'Not found', message: `Unknown endpoint: ${method} ${url}` }));
 	}
+}
+
+/**
+ * Handle GET /health - Health check
+ */
+function handleHealth(res: http.ServerResponse, port: number): void {
+	const uptime = process.uptime();
+	const webhookCount = webhooks.listWebhooks().length;
+	const queueStats = aiQueue.getQueueStats();
+	res.writeHead(200, { 'Content-Type': 'application/json' });
+	res.end(JSON.stringify({
+		status: 'ok',
+		port,
+		uptimeSeconds: Math.round(uptime),
+		webhooks: webhookCount,
+		queue: { pending: queueStats.pending, processing: queueStats.processing },
+		timestamp: new Date().toISOString(),
+	}));
 }
 
 /**
@@ -329,6 +362,14 @@ Base URL: http://localhost:${port}
 
 Endpoints:
 ----------
+
+GET /health
+    Health check — returns status, port, uptime, queue stats
+    Response: { status: 'ok', port, uptimeSeconds, webhooks, queue, timestamp }
+
+GET /port
+    Get current port number
+    Response: { port: number }
 
 GET /
 GET /help
@@ -435,6 +476,39 @@ GET /responses/stats
     Get response queue statistics
     Response: { total, pending, read }
 
+GET /ai/queue/pending
+    Get instructions not yet finalized
+    Response: { instructions: [...], count: number }
+
+GET /ai/queue/stalled
+    Get instructions with expired heartbeat
+    Response: { instructions: [...], count: number }
+
+POST /ai/queue/:id/heartbeat
+    Keep-alive for a processing instruction
+    Response: { success: true, timestamp: ISO }
+
+POST /webhooks/register
+    Register a webhook URL for push events
+    Body: {
+        "url": "http://localhost:5100/api/bridges/webhook",
+        "events": ["response.created", "task.completed", "task.dispatched", "task.progress"]
+    }
+    Response: { success: true, webhook: {...} }
+
+POST /webhooks/unregister
+    Unregister a webhook by URL or ID
+    Body: { "url": "..." } or { "id": "..." }
+    Response: { success: boolean }
+
+GET /webhooks
+    List all registered webhooks
+    Response: { webhooks: [...], count: number }
+
+GET /webhooks/deliveries
+    Recent webhook delivery log (last 50, newest first)
+    Response: { deliveries: [...], count: number }
+
 Examples:
 ---------
 
@@ -466,6 +540,17 @@ curl -X POST http://localhost:${port}/ai/queue/process
 
 # Get queue stats
 curl http://localhost:${port}/ai/queue/stats
+
+# Register a webhook
+curl -X POST http://localhost:${port}/webhooks/register \\
+  -H "Content-Type: application/json" \\
+  -d '{"url": "http://localhost:5100/api/bridges/webhook", "events": ["response.created", "task.completed", "task.dispatched", "task.progress"]}
+
+# List registered webhooks
+curl http://localhost:${port}/webhooks
+
+# Health check
+curl http://localhost:${port}/health
 `;
 
 	res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -1170,6 +1255,12 @@ function handleListWebhooks(res: http.ServerResponse): void {
 	const list = webhooks.listWebhooks();
 	res.writeHead(200, { 'Content-Type': 'application/json' });
 	res.end(JSON.stringify({ webhooks: list, count: list.length }));
+}
+
+function handleGetDeliveries(res: http.ServerResponse): void {
+	const deliveries = webhooks.getDeliveryLog();
+	res.writeHead(200, { 'Content-Type': 'application/json' });
+	res.end(JSON.stringify({ deliveries, count: deliveries.length }));
 }
 
 async function handleRegisterWebhook(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {

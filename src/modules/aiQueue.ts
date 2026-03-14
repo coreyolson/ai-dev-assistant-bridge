@@ -17,6 +17,7 @@ import * as crypto from 'crypto';
 import { log } from './logging';
 import { LogLevel } from './types';
 import * as responseQueue from './responseQueue';
+import * as webhooks from './webhooks';
 
 /**
  * Queue instruction interface
@@ -246,6 +247,15 @@ export async function processNextInstruction(
 				// Keep as 'processing' — actual completion happens when the
 				// agent POSTs to /responses after finishing the work
 				log(LogLevel.INFO, `Instruction sent to agent, awaiting response: ${pending.id}`);
+
+				// Notify Goltana that the instruction was successfully pasted into Chat
+				webhooks.fireWebhookEvent('task.dispatched', {
+					queueId: pending.id,
+					linkedTaskId: pending.linkedTaskId,
+					source: pending.source,
+					instruction: pending.instruction.slice(0, 200),
+					dispatchedAt: new Date().toISOString(),
+				});
 			} else {
 				pending.status = 'failed';
 				pending.error = 'Failed to send to AI agent';

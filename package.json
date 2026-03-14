@@ -78,6 +78,78 @@
 				"isSticky": true
 			}
 		],
+		"languageModelTools": [
+			{
+				"name": "report_completion",
+				"tags": ["bridge", "task", "completion"],
+				"displayName": "Report Task Completion",
+				"modelDescription": "Report the result of a dispatched task back to the originating system. Call this tool when you finish working on a task that was dispatched via the AI Feedback Bridge (look for a queueId in the task metadata). Provide the taskId (the queueId from the dispatch), the final status, a summary of what was done, and optionally findings, blockers, or questions.",
+				"canBeReferencedInPrompt": true,
+				"icon": "$(check)",
+				"inputSchema": {
+					"type": "object",
+					"required": ["taskId", "status", "summary"],
+					"properties": {
+						"taskId": {
+							"type": "string",
+							"description": "The queue ID of the dispatched task (from the queueId in task metadata)"
+						},
+						"status": {
+							"type": "string",
+							"enum": ["completed", "partial", "failed", "blocked"],
+							"description": "Final status of the work"
+						},
+						"summary": {
+							"type": "string",
+							"description": "Brief summary of what was accomplished or why it failed"
+						},
+						"findings": {
+							"type": "array",
+							"items": { "type": "string" },
+							"description": "Key findings or changes made"
+						},
+						"blockers": {
+							"type": "array",
+							"items": { "type": "string" },
+							"description": "Any blockers encountered"
+						},
+						"nextQuestions": {
+							"type": "array",
+							"items": { "type": "string" },
+							"description": "Questions back to the task submitter"
+						}
+					}
+				}
+			},
+			{
+				"name": "report_progress",
+				"tags": ["bridge", "task", "progress"],
+				"displayName": "Report Task Progress",
+				"modelDescription": "Report interim progress on a dispatched task back to the originating system. Call this tool periodically while working on long tasks dispatched via the AI Feedback Bridge to provide real-time visibility. Use the queueId from the task metadata as the taskId.",
+				"canBeReferencedInPrompt": true,
+				"icon": "$(sync~spin)",
+				"inputSchema": {
+					"type": "object",
+					"required": ["taskId", "update"],
+					"properties": {
+						"taskId": {
+							"type": "string",
+							"description": "The queue ID of the dispatched task (from the queueId in task metadata)"
+						},
+						"update": {
+							"type": "string",
+							"description": "Description of current progress or what is being worked on"
+						},
+						"percentComplete": {
+							"type": "number",
+							"minimum": 0,
+							"maximum": 100,
+							"description": "Estimated completion percentage (0-100)"
+						}
+					}
+				}
+			}
+		],
 		"configuration": {
 			"title": "AI Dev Assistant Bridge",
 			"properties": {

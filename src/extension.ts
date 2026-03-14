@@ -16,7 +16,9 @@ import * as autoContinue from './modules/autoContinue';
 import * as statusBar from './modules/statusBar';
 import * as commands from './modules/commands';
 import * as aiQueue from './modules/aiQueue';
+import * as webhooksMod from './modules/webhooks';
 import { formatCountdown } from './modules/timeFormatting';
+import { ReportCompletionTool, ReportProgressTool } from './modules/lmTools';
 
 let outputChannel: vscode.OutputChannel;
 let currentPort: number = 3737;
@@ -108,6 +110,9 @@ export async function activate(context: vscode.ExtensionContext) {
 	const workspaceFolders = vscode.workspace.workspaceFolders?.length || 0;
 	log(LogLevel.INFO, `Window context: ${workspaceName} (${workspaceFolders} folders)`);
 
+	// Restore persisted webhook registrations before server starts
+	webhooksMod.initWebhooks(context);
+
 	// Initialize status bar items
 	statusBar.initializeStatusBar(context, currentPort, config);
 
@@ -198,6 +203,13 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	// Register chat participant for automatic processing
 	chatIntegration.createChatParticipant(context);
+
+	// Register Language Model Tools for agent-mode feedback loop
+	context.subscriptions.push(
+		vscode.lm.registerTool('report_completion', new ReportCompletionTool()),
+		vscode.lm.registerTool('report_progress', new ReportProgressTool())
+	);
+	log(LogLevel.INFO, 'Language Model Tools registered: report_completion, report_progress');
 
 	// Log server status (no popup notification)
 	log(LogLevel.INFO, `Feedback server started on http://localhost:${currentPort}`);

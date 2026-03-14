@@ -4,12 +4,15 @@
  * External systems (e.g., Goltana) register a callback URL.
  * When events occur (response posted, task completed, queue item done),
  * the bridge sends an HTTP POST to all registered URLs.
+ * 
+ * Registrations are persisted to VS Code globalState so they survive reloads.
  */
 
 import { log } from './logging';
 import { LogLevel } from './types';
 import * as http from 'http';
 import * as https from 'https';
+import type * as vscode from 'vscode';
 
 export interface WebhookRegistration {
 	id: string;
@@ -18,8 +21,50 @@ export interface WebhookRegistration {
 	registeredAt: string;
 }
 
-/** In-memory webhook registry — survives for extension lifetime */
+export interface DeliveryRecord {
+	id: string;
+	event: string;
+	url: string;
+	status: 'success' | 'failed';
+	statusCode?: number;
+	attempts: number;
+	error?: string;
+	timestamp: string;
+}
+
+const STORAGE_KEY = 'webhookRegistrations';
+const DELIVERY_LOG_MAX = 50;
+const RETRY_DELAYS = [1000, 2000, 5000]; // Exponential backoff: 1s, 2s, 5s
+
+/** In-memory webhook registry — backed by globalState persistence */
 const webhooks: Map<string, WebhookRegistration> = new Map();
+
+/** Ring buffer of recent delivery records */
+const deliveryLog: DeliveryRecord[] = [];
+
+/** Extension context for persistence — set via initWebhooks() */
+let ctx: vscode.ExtensionContext | undefined;
+
+/**
+ * Initialize webhook module with extension context. Restores saved registrations.
+ */
+export function initWebhooks(context: vscode.ExtensionContext): void {
+	ctx = context;
+	const saved = context.globalState.get<WebhookRegistration[]>(STORAGE_KEY, []);
+	for (const wh of saved) {
+		webhooks.set(wh.id, wh);
+	}
+	if (saved.length > 0) {
+		log(LogLevel.INFO, `Restored ${saved.length} webhook registration(s) from storage`);
+	}
+}
+
+/** Persist current registrations to globalState */
+function persist(): void {
+	if (!ctx) { return; }
+	const list = Array.from(webhooks.values());
+	void ctx.globalState.update(STORAGE_KEY, list);
+}
 
 /**
  * Register a webhook URL for specific events.
@@ -30,6 +75,7 @@ export function registerWebhook(url: string, events: string[]): WebhookRegistrat
 		if (existing.url === url) {
 			existing.events = events;
 			log(LogLevel.INFO, `Webhook updated: ${url} → [${events.join(', ')}]`);
+			persist();
 			return existing;
 		}
 	}
@@ -42,6 +88,7 @@ export function registerWebhook(url: string, events: string[]): WebhookRegistrat
 	};
 	webhooks.set(registration.id, registration);
 	log(LogLevel.INFO, `Webhook registered: ${url} → [${events.join(', ')}]`);
+	persist();
 	return registration;
 }
 
@@ -53,6 +100,7 @@ export function unregisterWebhook(urlOrId: string): boolean {
 	if (webhooks.has(urlOrId)) {
 		webhooks.delete(urlOrId);
 		log(LogLevel.INFO, `Webhook unregistered by ID: ${urlOrId}`);
+		persist();
 		return true;
 	}
 	// Try by URL
@@ -60,6 +108,7 @@ export function unregisterWebhook(urlOrId: string): boolean {
 		if (wh.url === urlOrId) {
 			webhooks.delete(id);
 			log(LogLevel.INFO, `Webhook unregistered by URL: ${urlOrId}`);
+			persist();
 			return true;
 		}
 	}
@@ -74,18 +123,58 @@ export function listWebhooks(): WebhookRegistration[] {
 }
 
 /**
- * Fire a webhook event to all subscribers. Non-blocking, best-effort.
+ * Fire a webhook event to all subscribers with retry and delivery tracking.
  */
 export function fireWebhookEvent(event: string, payload: Record<string, unknown>): void {
 	for (const wh of webhooks.values()) {
 		if (!wh.events.includes(event) && !wh.events.includes('*')) {
 			continue;
 		}
-		
-		const body = JSON.stringify({ event, timestamp: new Date().toISOString(), ...payload });
-		
+		// Kick off delivery with retries (non-blocking)
+		void deliverWithRetry(wh, event, payload, 0);
+	}
+}
+
+/**
+ * Deliver a webhook event with exponential backoff retry.
+ */
+async function deliverWithRetry(
+	wh: WebhookRegistration,
+	event: string,
+	payload: Record<string, unknown>,
+	attempt: number
+): Promise<void> {
+	const body = JSON.stringify({ event, timestamp: new Date().toISOString(), ...payload });
+
+	try {
+		const result = await sendWebhookRequest(wh.url, body);
+
+		if (result.statusCode && result.statusCode >= 400) {
+			throw new Error(`HTTP ${result.statusCode}`);
+		}
+
+		// Success
+		recordDelivery(event, wh.url, 'success', attempt + 1, result.statusCode);
+	} catch (err) {
+		const errorMsg = err instanceof Error ? err.message : String(err);
+
+		if (attempt < RETRY_DELAYS.length) {
+			log(LogLevel.WARN, `Webhook delivery failed for ${wh.url} (attempt ${attempt + 1}/${RETRY_DELAYS.length + 1}): ${errorMsg} — retrying in ${RETRY_DELAYS[attempt]}ms`);
+			await sleep(RETRY_DELAYS[attempt]);
+			return deliverWithRetry(wh, event, payload, attempt + 1);
+		}
+
+		// All retries exhausted
+		log(LogLevel.ERROR, `Webhook delivery permanently failed for ${wh.url} after ${attempt + 1} attempts: ${errorMsg}`);
+		recordDelivery(event, wh.url, 'failed', attempt + 1, undefined, errorMsg);
+	}
+}
+
+/** Send a single webhook HTTP request. Returns status code. */
+function sendWebhookRequest(url: string, body: string): Promise<{ statusCode?: number }> {
+	return new Promise((resolve, reject) => {
 		try {
-			const parsedUrl = new URL(wh.url);
+			const parsedUrl = new URL(url);
 			const isHttps = parsedUrl.protocol === 'https:';
 			const options: http.RequestOptions = {
 				hostname: parsedUrl.hostname,
@@ -97,23 +186,45 @@ export function fireWebhookEvent(event: string, payload: Record<string, unknown>
 			};
 
 			const req = (isHttps ? https : http).request(options, (res) => {
-				// Consume response body to free socket
 				res.resume();
-				if (res.statusCode && res.statusCode >= 400) {
-					log(LogLevel.WARN, `Webhook ${wh.url} returned ${res.statusCode} for event ${event}`);
-				}
+				resolve({ statusCode: res.statusCode });
 			});
-			req.on('error', (err) => {
-				log(LogLevel.WARN, `Webhook delivery failed for ${wh.url}: ${err.message}`);
-			});
+			req.on('error', (err) => reject(err));
 			req.on('timeout', () => {
 				req.destroy();
-				log(LogLevel.WARN, `Webhook timed out for ${wh.url}`);
+				reject(new Error('Timeout'));
 			});
 			req.write(body);
 			req.end();
 		} catch (err) {
-			log(LogLevel.WARN, `Webhook fire error for ${wh.url}: ${err instanceof Error ? err.message : String(err)}`);
+			reject(err);
 		}
+	});
+}
+
+/** Record a delivery attempt in the ring buffer */
+function recordDelivery(
+	event: string, url: string, status: 'success' | 'failed',
+	attempts: number, statusCode?: number, error?: string
+): void {
+	deliveryLog.push({
+		id: `del-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+		event, url, status, statusCode, attempts, error,
+		timestamp: new Date().toISOString(),
+	});
+	// Trim to ring buffer max
+	while (deliveryLog.length > DELIVERY_LOG_MAX) {
+		deliveryLog.shift();
 	}
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Get recent delivery records (newest first).
+ */
+export function getDeliveryLog(): DeliveryRecord[] {
+	return [...deliveryLog].reverse();
 }
