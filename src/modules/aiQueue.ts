@@ -16,6 +16,7 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import { log } from './logging';
 import { LogLevel } from './types';
+import * as responseQueue from './responseQueue';
 
 /**
  * Queue instruction interface
@@ -237,12 +238,14 @@ export async function processNextInstruction(
 				source: pending.source,
 				queueId: pending.id,
 				priority: pending.priority,
+				linkedTaskId: pending.linkedTaskId,
 				metadata: pending.metadata
 			});
 			
 			if (success) {
-				pending.status = 'completed';
-				pending.result = 'Sent to AI agent successfully';
+				// Keep as 'processing' — actual completion happens when the
+				// agent POSTs to /responses after finishing the work
+				log(LogLevel.INFO, `Instruction sent to agent, awaiting response: ${pending.id}`);
 			} else {
 				pending.status = 'failed';
 				pending.error = 'Failed to send to AI agent';
@@ -253,14 +256,29 @@ export async function processNextInstruction(
 		}
 		
 		log(LogLevel.INFO, `Instruction ${pending.status}: ${pending.id}`);
-		
-		// Auto-complete linked task if queue item succeeded
-		if (pending.status === 'completed' && pending.linkedTaskId && linkedTaskCallback) {
-			try {
-				await linkedTaskCallback(pending.linkedTaskId);
-				log(LogLevel.INFO, `Auto-completed linked task ${pending.linkedTaskId} for queue item ${pending.id}`);
-			} catch (err) {
-				log(LogLevel.WARN, `Failed to auto-complete linked task ${pending.linkedTaskId}`, { error: err instanceof Error ? err.message : String(err) });
+
+		// Only create immediate response/completion for failure or no-agent cases
+		if (pending.status === 'failed') {
+			responseQueue.addResponse(
+				pending.id,
+				'failed',
+				pending.error ?? 'Task processing failed',
+				undefined,
+				[pending.error ?? 'Unknown error'],
+			);
+		} else if (pending.status === 'completed') {
+			responseQueue.addResponse(
+				pending.id,
+				'completed',
+				pending.result ?? 'Task processed by VS Code agent',
+			);
+			if (pending.linkedTaskId && linkedTaskCallback) {
+				try {
+					await linkedTaskCallback(pending.linkedTaskId);
+					log(LogLevel.INFO, `Auto-completed linked task ${pending.linkedTaskId} for queue item ${pending.id}`);
+				} catch (err) {
+					log(LogLevel.WARN, `Failed to auto-complete linked task ${pending.linkedTaskId}`, { error: err instanceof Error ? err.message : String(err) });
+				}
 			}
 		}
 		
@@ -268,6 +286,13 @@ export async function processNextInstruction(
 		pending.status = 'failed';
 		pending.error = error instanceof Error ? error.message : String(error);
 		log(LogLevel.ERROR, `Error processing instruction ${pending.id}`, { error: pending.error });
+		responseQueue.addResponse(
+			pending.id,
+			'failed',
+			`Processing error: ${pending.error}`,
+			undefined,
+			[pending.error],
+		);
 	} finally {
 		processingActive = false;
 		saveQueue();
@@ -325,6 +350,37 @@ export function setAutoProcess(
  */
 export function setLinkedTaskCallback(cb: (taskId: string) => Promise<void>): void {
 	linkedTaskCallback = cb;
+}
+
+/**
+ * Complete a queue item externally (called when agent POSTs to /responses).
+ * Also auto-completes the linked task if the queue item has one.
+ */
+export async function completeQueueItem(
+	queueId: string,
+	status: 'completed' | 'failed' = 'completed',
+	result?: string
+): Promise<QueueInstruction | undefined> {
+	const item = instructionQueue.find(i => i.id === queueId);
+	if (!item || (item.status !== 'processing' && item.status !== 'stalled')) {
+		return undefined;
+	}
+
+	item.status = status;
+	if (result) item.result = result;
+	saveQueue();
+	log(LogLevel.INFO, `Queue item ${queueId} externally marked ${status}`);
+
+	if (status === 'completed' && item.linkedTaskId && linkedTaskCallback) {
+		try {
+			await linkedTaskCallback(item.linkedTaskId);
+			log(LogLevel.INFO, `Auto-completed linked task ${item.linkedTaskId} for queue item ${queueId}`);
+		} catch (err) {
+			log(LogLevel.WARN, `Failed to auto-complete linked task ${item.linkedTaskId}`, { error: err instanceof Error ? err.message : String(err) });
+		}
+	}
+
+	return item;
 }
 
 /**

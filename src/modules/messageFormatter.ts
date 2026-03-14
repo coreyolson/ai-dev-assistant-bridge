@@ -56,13 +56,18 @@ export function formatFeedbackMessage(feedbackMessage: string, appContext?: unkn
 		fullMessage += `**Context:**\n\`\`\`json\n${JSON.stringify(filteredContext, null, 2)}\n\`\`\`\n\n`;
 	}
 
+	// Extract IDs from context for pre-filled curl commands
+	const ctx = context as Record<string, unknown>;
+	const queueId = typeof ctx.queueId === 'string' ? ctx.queueId : '<ID>';
+	const taskId = typeof ctx.linkedTaskId === 'string' ? ctx.linkedTaskId : queueId;
+
 	fullMessage += `**Instructions:**\n`;
 	fullMessage += `Analyze feedback, take appropriate action:\n`;
 	fullMessage += `• If a bug → find and fix root cause\n`;
 	fullMessage += `• If a feature → draft implementation plan\n`;
 	fullMessage += `• Apply and commit changes\n`;
-	fullMessage += `• Mark tasks done: curl -X PUT http://localhost:3737/tasks/<ID>/status -H 'Content-Type: application/json' -d '{"status":"completed"}'\n`;
-	fullMessage += `• Post response: curl -X POST http://localhost:3737/responses -H 'Content-Type: application/json' -d '{"taskId":"<ID>","status":"completed","summary":"<what was done>","findings":["<key findings>"],"blockers":[],"nextQuestions":[]}'\n`;
+	fullMessage += `• Mark tasks done: curl -X PUT http://localhost:3737/tasks/${taskId}/status -H 'Content-Type: application/json' -d '{"status":"completed"}'\n`;
+	fullMessage += `• Post response: curl -X POST http://localhost:3737/responses -H 'Content-Type: application/json' -d '{"taskId":"${queueId}","status":"completed","summary":"<what was done>","findings":["<key findings>"],"blockers":[],"nextQuestions":[]}'\n`;
 
 	return fullMessage;
 }

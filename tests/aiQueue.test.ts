@@ -204,7 +204,7 @@ suite('AI Queue Module Test Suite', () => {
 			assert.strictEqual(processed, false);
 		});
 
-		test('processNextInstruction should mark instruction as completed on success', async () => {
+		test('processNextInstruction should keep instruction as processing when sent to agent', async () => {
 			const inst = enqueue('Test', 'source');
 			const mockSendToAgent = async () => true;
 
@@ -212,7 +212,7 @@ suite('AI Queue Module Test Suite', () => {
 
 			const found = aiQueue.getInstruction(inst.id);
 			assert.ok(found);
-			assert.strictEqual(found.status, 'completed');
+			assert.strictEqual(found.status, 'processing');
 		});
 
 		test('processNextInstruction should mark instruction as failed on error', async () => {

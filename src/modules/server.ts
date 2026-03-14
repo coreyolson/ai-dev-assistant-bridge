@@ -1030,6 +1030,12 @@ async function handlePostResponse(req: http.IncomingMessage, res: http.ServerRes
 			Array.isArray(data.nextQuestions) ? data.nextQuestions : undefined
 		);
 
+		// Auto-complete the matching queue item and its linked task
+		if (data.status === 'completed' || data.status === 'failed') {
+			const finalStatus = data.status === 'completed' ? 'completed' : 'failed';
+			await aiQueue.completeQueueItem(data.taskId, finalStatus, data.summary);
+		}
+
 		// Fire webhook for response creation
 		webhooks.fireWebhookEvent('response.created', { response });
 
