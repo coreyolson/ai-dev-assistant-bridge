@@ -1122,7 +1122,9 @@ async function handlePostResponse(req: http.IncomingMessage, res: http.ServerRes
 		}
 
 		// Fire webhook for response creation
-		webhooks.fireWebhookEvent('response.created', { response });
+		// Include queue item metadata so Goltana can route to originating conversation
+		const queueItem = aiQueue.getInstruction(data.taskId);
+		webhooks.fireWebhookEvent('response.created', { response, metadata: queueItem?.metadata });
 
 		res.writeHead(201, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ success: true, response }));

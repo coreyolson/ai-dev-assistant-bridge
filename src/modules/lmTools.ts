@@ -45,7 +45,9 @@ export class ReportCompletionTool implements vscode.LanguageModelTool<ReportComp
 		}
 
 		// Fire webhook so Goltana gets notified immediately
-		webhooks.fireWebhookEvent('response.created', { response });
+		// Include queue item metadata so Goltana can route to originating conversation
+		const queueItem = aiQueue.getInstruction(taskId);
+		webhooks.fireWebhookEvent('response.created', { response, metadata: queueItem?.metadata });
 
 		const msg = `Task ${taskId} reported as ${status}. Response ID: ${response.id}`;
 		log(LogLevel.INFO, `[LM Tool] ${msg}`);
