@@ -65,18 +65,18 @@ export function initQueue(context: vscode.ExtensionContext): void {
 	extensionContext = context;
 	loadQueue();
 	startStallDetection();
-	context.subscriptions.push({ dispose: () => { if (stallCheckInterval) clearInterval(stallCheckInterval); } });
+	context.subscriptions.push({ dispose: () => { if (stallCheckInterval) { clearInterval(stallCheckInterval); } } });
 }
 
 /** Persist queue to globalState */
 function saveQueue(): void {
-	if (!extensionContext) return;
+	if (!extensionContext) { return; }
 	extensionContext.globalState.update('aiQueue', instructionQueue);
 }
 
 /** Load queue from globalState, reset interrupted tasks */
 function loadQueue(): void {
-	if (!extensionContext) return;
+	if (!extensionContext) { return; }
 	const saved = extensionContext.globalState.get<QueueInstruction[]>('aiQueue');
 	if (Array.isArray(saved) && saved.length > 0) {
 		instructionQueue = saved;
@@ -128,7 +128,7 @@ export function enqueueInstruction(
 
 	// Prune old dedup entries
 	for (const [h, ts] of recentInstructionHashes) {
-		if (now - ts > DEDUP_WINDOW_MS) recentInstructionHashes.delete(h);
+		if (now - ts > DEDUP_WINDOW_MS) { recentInstructionHashes.delete(h); }
 	}
 
 	const queueItem: QueueInstruction = {
@@ -393,7 +393,7 @@ export async function completeQueueItem(
 	}
 
 	item.status = status;
-	if (result) item.result = result;
+	if (result) { item.result = result; }
 
 	// Release the serial processing gate so the next pending item can start
 	processingActive = false;
@@ -412,7 +412,7 @@ export async function completeQueueItem(
 	// Kick off next pending item now that the gate is released
 	if (autoProcessEnabled && autoProcessCallback) {
 		const hasPending = instructionQueue.some(i => i.status === 'pending');
-		if (hasPending) void processNextInstruction(autoProcessCallback);
+		if (hasPending) { void processNextInstruction(autoProcessCallback); }
 	}
 
 	return item;
@@ -479,7 +479,7 @@ function generateId(): string {
  */
 export function recordHeartbeat(id: string): boolean {
 	const item = instructionQueue.find(i => i.id === id);
-	if (!item || (item.status !== 'processing' && item.status !== 'stalled')) return false;
+	if (!item || (item.status !== 'processing' && item.status !== 'stalled')) { return false; }
 	item.lastHeartbeat = new Date().toISOString();
 	if (item.status === 'stalled') {
 		item.status = 'processing';
@@ -508,7 +508,7 @@ export function getStalledInstructions(): QueueInstruction[] {
  * re-queues stalled items after extended timeout
  */
 function startStallDetection(): void {
-	if (stallCheckInterval) clearInterval(stallCheckInterval);
+	if (stallCheckInterval) { clearInterval(stallCheckInterval); }
 	stallCheckInterval = setInterval(() => {
 		const now = Date.now();
 		let changed = false;
@@ -575,7 +575,7 @@ function startStallDetection(): void {
 			// Trigger auto-process for any re-queued items
 			if (autoProcessEnabled && autoProcessCallback) {
 				const hasPending = instructionQueue.some(i => i.status === 'pending');
-				if (hasPending) void processNextInstruction(autoProcessCallback);
+				if (hasPending) { void processNextInstruction(autoProcessCallback); }
 			}
 		}
 	}, 60_000); // Check every 60 seconds
