@@ -133,6 +133,13 @@ export async function activate(context: vscode.ExtensionContext) {
 		server: server.getServer()
 	});
 
+	// Register Language Model Tools so Copilot agents can call them
+	context.subscriptions.push(
+		vscode.lm.registerTool('report_completion', new ReportCompletionTool()),
+		vscode.lm.registerTool('report_progress', new ReportProgressTool())
+	);
+	log(LogLevel.INFO, '🔧 Registered LM tools: report_completion, report_progress');
+
 	// Start HTTP server to receive feedback
 	startFeedbackServer(context);
 
