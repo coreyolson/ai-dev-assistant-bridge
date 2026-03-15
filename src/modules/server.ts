@@ -842,26 +842,6 @@ async function handleFeedback(
 			hasContext: !!feedback.context 
 		});
 
-		// Guard: detect completion reports that should NOT be injected into Copilot Chat.
-		// These are status updates, not new work. Forward to response queue instead.
-		const completionPatterns = [
-			/\btask[s]?\s+completed\b/i,
-			/\ball\s+\d+\s+tasks?\s+completed\b/i,
-			/\bcomplete\s*\(commit\s+[0-9a-f]{6,}\)/i,
-			/\bcommit\s+[0-9a-f]{7,}\b.*\bcompleted\b/i,
-		];
-		const looksLikeCompletion = completionPatterns.some(p => p.test(sanitizedMessage));
-		if (looksLikeCompletion) {
-			log(LogLevel.WARN, 'Feedback looks like a completion report — logging only, not forwarding to Copilot Chat to prevent feedback loop');
-			res.writeHead(200, { 'Content-Type': 'application/json' });
-			res.end(JSON.stringify({
-				success: true,
-				message: 'Completion report logged (not forwarded to Copilot Chat to prevent feedback loop). Use POST /responses to report task completions.',
-				redirectedToLog: true
-			}));
-			return;
-		}
-
 		const success = await sendToAgent(sanitizedMessage, feedback.context);
 
 		res.writeHead(200, { 'Content-Type': 'application/json' });
