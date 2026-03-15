@@ -23,6 +23,7 @@ export type { FeedbackContext };
 
 let chatParticipant: vscode.ChatParticipant | undefined;
 let outputChannel: vscode.OutputChannel;
+let sendingActive = false;
 
 /**
  * Initialize the chat module with output channel
@@ -176,6 +177,13 @@ async function handleChatRequest(
  * ```
  */
 export async function sendToAgent(feedbackMessage: string, appContext?: unknown): Promise<boolean> {
+	// Mutex: prevent concurrent sends which cause duplicate messages
+	if (sendingActive) {
+		log(LogLevel.WARN, 'sendToAgent skipped — another send is in progress');
+		return false;
+	}
+	sendingActive = true;
+
 	try {
 		const fullMessage = formatFeedbackMessage(feedbackMessage, appContext);
 
@@ -189,21 +197,25 @@ export async function sendToAgent(feedbackMessage: string, appContext?: unknown)
 			if (model) {
 				outputChannel.appendLine('✅ AI Agent processing request...');
 
-				// Send into the existing active chat thread — no new chat created.
-				// This keeps dispatched tasks in the user's current conversation context.
-				await vscode.commands.executeCommand('workbench.action.chat.open', {
-					query: fullMessage
-				});
-				
-				// Auto-submit by sending the submit command
-				// Short delay to allow chat UI to populate (300ms is sufficient)
-				setTimeout(async () => {
-					try {
-						await vscode.commands.executeCommand('workbench.action.chat.submit');
-					} catch (e) {
-						outputChannel.appendLine('Note: Could not auto-submit. User can press Enter to submit.');
-					}
-				}, 300);
+				// Focus existing chat panel WITHOUT creating a new session.
+				// Passing `query` to chat.open always starts a new chat thread,
+				// so we open first, then paste into the current thread's input.
+				await vscode.commands.executeCommand('workbench.action.chat.open');
+				await new Promise(resolve => setTimeout(resolve, 250));
+
+				// Populate the input via clipboard to stay in the current thread
+				const savedClipboard = await vscode.env.clipboard.readText();
+				await vscode.env.clipboard.writeText(fullMessage);
+				await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
+				await vscode.env.clipboard.writeText(savedClipboard);
+
+				// Submit after paste has populated the input
+				await new Promise(resolve => setTimeout(resolve, 300));
+				try {
+					await vscode.commands.executeCommand('workbench.action.chat.submit');
+				} catch (e) {
+					outputChannel.appendLine('Note: Could not auto-submit. User can press Enter to submit.');
+				}
 				
 				// Silent success - logged only
 				log(LogLevel.INFO, 'Feedback sent to AI Agent');
@@ -222,7 +234,16 @@ export async function sendToAgent(feedbackMessage: string, appContext?: unknown)
 	} catch (error) {
 		log(LogLevel.ERROR, `Error sending to agent: ${getErrorMessage(error)}`);
 		return false;
+	} finally {
+		sendingActive = false;
 	}
+}
+
+/**
+ * Check if a send operation is currently in progress
+ */
+export function isSendingActive(): boolean {
+	return sendingActive;
 }
 
 /**

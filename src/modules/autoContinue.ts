@@ -20,6 +20,8 @@ import * as guidingDocuments from './guidingDocuments';
 import * as taskManager from './taskManager';
 import { getCustomCategories } from './customCategories';
 import { formatCountdown } from './timeFormatting';
+import { isProcessingActive } from './aiQueue';
+import { isSendingActive } from './chatIntegration';
 
 let autoContinueTimer: NodeJS.Timeout | undefined;
 
@@ -210,6 +212,11 @@ export function startAutoContinue(
 		
 		autoContinueTimer = setInterval(async () => {
 			try {
+				// Skip if queue is actively processing or a send is in-flight
+				if (isProcessingActive() || isSendingActive()) {
+					return;
+				}
+
 				// Re-check if still enabled before sending
 				const currentConfig = getConfig();
 				const stillEnabled = currentConfig.get<boolean>('autoContinue.enabled', false);

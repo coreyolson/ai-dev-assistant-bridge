@@ -530,6 +530,13 @@ export function getStalledInstructions(): QueueInstruction[] {
 }
 
 /**
+ * Check if the queue is actively processing an instruction
+ */
+export function isProcessingActive(): boolean {
+	return processingActive;
+}
+
+/**
  * Stall detection loop — marks processing items as stalled if heartbeat is old,
  * re-queues stalled items after extended timeout
  */
