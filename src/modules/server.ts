@@ -668,7 +668,21 @@ async function handleUpdateTask(
 		});
 		
 		log(LogLevel.INFO, 'Task updated via API', { taskId, status: data.status });
-		
+
+		// Fire webhook + complete linked queue item when task is completed/failed
+		if (data.status === 'completed' || data.status === 'failed') {
+			const queueItem = aiQueue.getInstructionByLinkedTask(taskId);
+			webhooks.fireWebhookEvent('task.completed', {
+				taskId,
+				queueId: queueItem?.id,
+				status: data.status,
+				metadata: queueItem?.metadata,
+			});
+			if (queueItem) {
+				await aiQueue.completeQueueItem(queueItem.id, data.status === 'completed' ? 'completed' : 'failed', data.summary);
+			}
+		}
+
 		res.writeHead(200, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ success: true, taskId, status: data.status }));
 	} catch (error) {

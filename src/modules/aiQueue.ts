@@ -178,6 +178,15 @@ export function getInstruction(id: string): QueueInstruction | undefined {
 }
 
 /**
+ * Find a queue instruction by its linked task ID
+ * @param taskId - The linked task ID to search for
+ * @returns Queue instruction or undefined
+ */
+export function getInstructionByLinkedTask(taskId: string): QueueInstruction | undefined {
+	return instructionQueue.find(item => item.linkedTaskId === taskId);
+}
+
+/**
  * Remove instruction from queue
  * @param id - Instruction ID
  * @returns true if removed, false if not found
