@@ -318,6 +318,8 @@ async function handleRequest(
 		handleDeleteFromQueue(res, url);
 	} else if (url === '/ai/queue/clear' && method === 'POST') {
 		handleClearQueue(res);
+	} else if (url === '/ai/queue/reset-gate' && method === 'POST') {
+		handleResetProcessingGate(res);
 	} else if (url === '/webhooks' && method === 'GET') {
 		handleListWebhooks(res);
 	} else if (url === '/webhooks/deliveries' && method === 'GET') {
@@ -1018,6 +1020,7 @@ async function handleProcessQueue(
 	sendToAgent: (message: string, context?: unknown) => Promise<boolean>
 ): Promise<void> {
 	try {
+		const stats = aiQueue.getQueueStats();
 		const processed = await aiQueue.processNextInstruction(sendToAgent);
 		
 		if (processed) {
@@ -1026,11 +1029,20 @@ async function handleProcessQueue(
 				success: true, 
 				message: 'Instruction processed' 
 			}));
+		} else if (stats.processing > 0) {
+			res.writeHead(200, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ 
+				success: false, 
+				message: 'Already processing an instruction',
+				processing: stats.processing,
+				pending: stats.pending
+			}));
 		} else {
 			res.writeHead(200, { 'Content-Type': 'application/json' });
 			res.end(JSON.stringify({ 
 				success: false, 
-				message: 'No pending instructions in queue' 
+				message: 'No pending instructions in queue',
+				pending: stats.pending
 			}));
 		}
 	} catch (error) {
@@ -1190,6 +1202,24 @@ function handleClearQueue(res: http.ServerResponse): void {
 		res.end(JSON.stringify({ 
 			success: true, 
 			message: `Cleared ${cleared} processed instructions` 
+		}));
+	} catch (error) {
+		res.writeHead(500, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ error: 'Internal server error', message: getErrorMessage(error) }));
+	}
+}
+
+/**
+ * Handle POST /ai/queue/reset-gate — Reset stuck processing gate
+ */
+function handleResetProcessingGate(res: http.ServerResponse): void {
+	try {
+		const wasStuck = aiQueue.resetProcessingGateIfStuck();
+		res.writeHead(200, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({
+			success: true,
+			wasStuck,
+			message: wasStuck ? 'Processing gate was stuck and has been reset' : 'Processing gate was not stuck'
 		}));
 	} catch (error) {
 		res.writeHead(500, { 'Content-Type': 'application/json' });

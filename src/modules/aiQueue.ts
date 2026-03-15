@@ -49,8 +49,8 @@ let linkedTaskCallback: ((taskId: string) => Promise<void>) | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
 let stallCheckInterval: ReturnType<typeof setInterval> | undefined;
 
-const STALL_TIMEOUT_MS = 5 * 60 * 1000;    // 5 minutes with no heartbeat → stalled
-const REQUEUE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes stalled → re-queue
+const STALL_TIMEOUT_MS = 15 * 60 * 1000;   // 15 minutes with no heartbeat → stalled
+const REQUEUE_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes stalled → re-queue
 const DEDUP_WINDOW_MS = 10 * 60 * 1000;    // Reject duplicate instructions within 10min
 const MAX_QUEUE_SIZE = 50;                 // Reject enqueue when queue exceeds this
 const MAX_REQUEUE_COUNT = 3;               // Permanently fail after this many re-queues
@@ -227,12 +227,13 @@ export async function processNextInstruction(
 	sendToAgent?: (message: string, context?: unknown) => Promise<boolean>
 ): Promise<boolean> {
 	if (processingActive) {
-		log(LogLevel.WARN, 'Already processing an instruction');
+		log(LogLevel.WARN, 'Already processing an instruction — skipping');
 		return false;
 	}
 	
 	const pending = instructionQueue.find(item => item.status === 'pending');
 	if (!pending) {
+		log(LogLevel.DEBUG, 'No pending instructions in queue');
 		return false;
 	}
 	
@@ -430,6 +431,7 @@ export function getQueueStats(): {
 	failed: number;
 	stalled: number;
 	autoProcessEnabled: boolean;
+	processingGateLocked: boolean;
 } {
 	return {
 		total: instructionQueue.length,
@@ -438,7 +440,8 @@ export function getQueueStats(): {
 		completed: instructionQueue.filter(i => i.status === 'completed').length,
 		failed: instructionQueue.filter(i => i.status === 'failed').length,
 		stalled: instructionQueue.filter(i => i.status === 'stalled').length,
-		autoProcessEnabled
+		autoProcessEnabled,
+		processingGateLocked: processingActive
 	};
 }
 
@@ -497,6 +500,20 @@ export function getPendingInstructions(): QueueInstruction[] {
 }
 
 /**
+ * Reset the processing gate if it's stuck (no items actually processing).
+ * Returns true if the gate was stuck and got reset.
+ */
+export function resetProcessingGateIfStuck(): boolean {
+	if (!processingActive) { return false; }
+	const hasProcessing = instructionQueue.some(i => i.status === 'processing');
+	if (hasProcessing) { return false; }
+	// Gate is stuck: processingActive=true but no item is 'processing'
+	processingActive = false;
+	log(LogLevel.WARN, 'Reset stuck processingActive gate (no items in processing state)');
+	return true;
+}
+
+/**
  * Get stalled instructions
  */
 export function getStalledInstructions(): QueueInstruction[] {
@@ -518,6 +535,8 @@ function startStallDetection(): void {
 				const elapsed = now - new Date(item.lastHeartbeat).getTime();
 				if (elapsed > STALL_TIMEOUT_MS) {
 					item.status = 'stalled';
+					// Release processing gate immediately so other pending items can proceed
+					processingActive = false;
 					log(LogLevel.WARN, `Instruction ${item.id} stalled (no heartbeat for ${Math.round(elapsed / 1000)}s)`);
 					webhooks.fireWebhookEvent('task.stalled', {
 						queueId: item.id,
@@ -578,5 +597,8 @@ function startStallDetection(): void {
 				if (hasPending) { void processNextInstruction(autoProcessCallback); }
 			}
 		}
+
+		// Safety: if processingActive is true but nothing is actually processing, reset
+		resetProcessingGateIfStuck();
 	}, 60_000); // Check every 60 seconds
 }
