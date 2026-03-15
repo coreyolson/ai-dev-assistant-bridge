@@ -341,13 +341,31 @@ function handleHealth(res: http.ServerResponse, port: number): void {
 	const uptime = process.uptime();
 	const webhookCount = webhooks.listWebhooks().length;
 	const queueStats = aiQueue.getQueueStats();
+
+	// Gather details about the currently-processing item (if any)
+	const processingItems = aiQueue.getQueue('processing');
+	const stalledItems = aiQueue.getStalledInstructions();
+	const activeItem = processingItems.length > 0 ? {
+		id: processingItems[0].id,
+		instruction: processingItems[0].instruction.slice(0, 200),
+		claimedAt: processingItems[0].claimedAt,
+		lastHeartbeat: processingItems[0].lastHeartbeat,
+		requeueCount: processingItems[0].requeueCount ?? 0,
+	} : null;
+
+	// Determine effective availability
+	const available = !queueStats.processingGateLocked && queueStats.stalled === 0;
+
 	res.writeHead(200, { 'Content-Type': 'application/json' });
 	res.end(JSON.stringify({
 		status: 'ok',
 		port,
 		uptimeSeconds: Math.round(uptime),
+		available,
 		webhooks: webhookCount,
-		queue: { pending: queueStats.pending, processing: queueStats.processing },
+		queue: queueStats,
+		activeItem,
+		stalledCount: stalledItems.length,
 		timestamp: new Date().toISOString(),
 	}));
 }

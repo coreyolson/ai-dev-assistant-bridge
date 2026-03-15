@@ -151,6 +151,9 @@ export async function activate(context: vscode.ExtensionContext) {
 	// Write port discovery file to each workspace folder
 	portManager.writeBridgePortFiles(currentPort);
 
+	// Start periodic heartbeat so Goltana always knows bridge state
+	chatIntegration.startBridgeHeartbeat();
+
 	// Start auto-continue only if enabled in config
 	const autoEnabled = config.get<boolean>('autoContinue.enabled', false);
 	const inspectValue = config.inspect<boolean>('autoContinue.enabled');

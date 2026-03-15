@@ -17,6 +17,8 @@ import * as vscode from 'vscode';
 import { LogLevel } from './types';
 import { log, getErrorMessage } from './logging';
 import { formatFeedbackMessage, type FeedbackContext } from './messageFormatter';
+import * as webhooks from './webhooks';
+import * as aiQueue from './aiQueue';
 
 // Re-export for backward compatibility
 export type { FeedbackContext };
@@ -24,6 +26,7 @@ export type { FeedbackContext };
 let chatParticipant: vscode.ChatParticipant | undefined;
 let outputChannel: vscode.OutputChannel;
 let sendingActive = false;
+let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 
 /**
  * Initialize the chat module with output channel
@@ -101,6 +104,19 @@ async function handleChatRequest(
 	
 	outputChannel.appendLine(`Chat request received: ${request.prompt}`);
 	
+	// Forward conversation context to Goltana so it has visibility
+	try {
+		const historyExcerpt = serializeChatHistory(context.history, 10);
+		if (historyExcerpt.length > 0) {
+			webhooks.fireWebhookEvent('bridge.chat_context', {
+				turnCount: context.history.length,
+				recentHistory: historyExcerpt,
+				currentPrompt: request.prompt.slice(0, 500),
+				timestamp: new Date().toISOString(),
+			});
+		}
+	} catch { /* non-critical */ }
+
 	stream.markdown(`### 🔄 Processing Feedback\n\n`);
 	stream.markdown(`**Message:** ${request.prompt}\n\n`);
 	
@@ -118,9 +134,20 @@ async function handleChatRequest(
 		const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot', family: 'gpt-4o' });
 		
 		if (model) {
-			const messages = [
-				vscode.LanguageModelChatMessage.User(request.prompt)
-			];
+			// Include conversation history so the participant has context
+			const messages: vscode.LanguageModelChatMessage[] = [];
+			for (const turn of context.history) {
+				if (turn instanceof vscode.ChatRequestTurn) {
+					messages.push(vscode.LanguageModelChatMessage.User(turn.prompt));
+				} else if (turn instanceof vscode.ChatResponseTurn) {
+					const parts = turn.response
+						.filter((p): p is vscode.ChatResponseMarkdownPart => p instanceof vscode.ChatResponseMarkdownPart)
+						.map(p => p.value.value)
+						.join('');
+					if (parts) { messages.push(vscode.LanguageModelChatMessage.Assistant(parts)); }
+				}
+			}
+			messages.push(vscode.LanguageModelChatMessage.User(request.prompt));
 			
 			const response = await model.sendRequest(messages, {}, token);
 			
@@ -136,6 +163,30 @@ async function handleChatRequest(
 	}
 	
 	return { metadata: { command: 'process-feedback' } };
+}
+
+/**
+ * Serialize chat history turns into a compact array for webhook delivery
+ */
+function serializeChatHistory(
+	history: ReadonlyArray<vscode.ChatRequestTurn | vscode.ChatResponseTurn>,
+	maxTurns: number
+): Array<{ role: string; text: string }> {
+	const result: Array<{ role: string; text: string }> = [];
+	const recent = history.slice(-maxTurns);
+	for (const turn of recent) {
+		if (turn instanceof vscode.ChatRequestTurn) {
+			result.push({ role: 'user', text: turn.prompt.slice(0, 500) });
+		} else if (turn instanceof vscode.ChatResponseTurn) {
+			const text = turn.response
+				.filter((p): p is vscode.ChatResponseMarkdownPart => p instanceof vscode.ChatResponseMarkdownPart)
+				.map(p => p.value.value)
+				.join('')
+				.slice(0, 500);
+			if (text) { result.push({ role: 'assistant', text }); }
+		}
+	}
+	return result;
 }
 
 /**
@@ -256,7 +307,58 @@ export async function sendToCopilotChat(feedbackMessage: string, appContext: Fee
 /**
  * Dispose chat resources
  */
+/**
+ * Start a periodic heartbeat that pushes bridge state to Goltana.
+ * Fires every 60s with queue stats, active item, and availability.
+ */
+export function startBridgeHeartbeat(): void {
+	stopBridgeHeartbeat();
+
+	const fireHeartbeat = () => {
+		try {
+			const stats = aiQueue.getQueueStats();
+			const processing = aiQueue.getQueue('processing');
+			const stalled = aiQueue.getStalledInstructions();
+
+			const activeItem = processing.length > 0 ? {
+				id: processing[0].id,
+				instruction: processing[0].instruction.slice(0, 200),
+				claimedAt: processing[0].claimedAt,
+				lastHeartbeat: processing[0].lastHeartbeat,
+				requeueCount: processing[0].requeueCount ?? 0,
+			} : null;
+
+			webhooks.fireWebhookEvent('bridge.heartbeat', {
+				status: stats.stalled > 0 ? 'degraded' : (stats.processingGateLocked ? 'busy' : 'idle'),
+				available: !stats.processingGateLocked && stats.stalled === 0,
+				queue: stats,
+				activeItem,
+				stalledItems: stalled.map((s: aiQueue.QueueInstruction) => ({ id: s.id, instruction: s.instruction.slice(0, 200), requeueCount: s.requeueCount ?? 0 })),
+				timestamp: new Date().toISOString(),
+			});
+		} catch (err) {
+			log(LogLevel.DEBUG, `Heartbeat fire failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	};
+
+	// Fire immediately on start, then every 60s
+	fireHeartbeat();
+	heartbeatTimer = setInterval(fireHeartbeat, 60_000);
+	log(LogLevel.INFO, 'Bridge heartbeat started (60s interval)');
+}
+
+/**
+ * Stop the periodic heartbeat
+ */
+export function stopBridgeHeartbeat(): void {
+	if (heartbeatTimer) {
+		clearInterval(heartbeatTimer);
+		heartbeatTimer = undefined;
+	}
+}
+
 export function disposeChat(): void {
+	stopBridgeHeartbeat();
 	if (chatParticipant) {
 		chatParticipant.dispose();
 		chatParticipant = undefined;
