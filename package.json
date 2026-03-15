@@ -148,6 +148,114 @@
 						}
 					}
 				}
+			},
+			{
+				"name": "report_observation",
+				"tags": ["bridge", "observation"],
+				"displayName": "Report Observation",
+				"modelDescription": "Report a lightweight observation back to the originating system without completing the task. Use this when you notice something noteworthy during work — an anomaly, a pattern, a potential issue — that Goltana should know about but that doesn't constitute task completion or progress.",
+				"canBeReferencedInPrompt": true,
+				"icon": "$(eye)",
+				"inputSchema": {
+					"type": "object",
+					"required": ["observation"],
+					"properties": {
+						"taskId": {
+							"type": "string",
+							"description": "Optional queue ID of the current task (from the queueId in task metadata)"
+						},
+						"observation": {
+							"type": "string",
+							"description": "What you observed — an anomaly, pattern, potential issue, or insight"
+						},
+						"severity": {
+							"type": "string",
+							"enum": ["info", "warning", "critical"],
+							"description": "How important is this observation (default: info)"
+						}
+					}
+				}
+			},
+			{
+				"name": "query_goltana",
+				"tags": ["bridge", "goltana", "query"],
+				"displayName": "Query Goltana",
+				"modelDescription": "Ask Goltana (the AI orchestrator) a question and get a synchronous response. Use this to get clarification, context, or guidance from Goltana before making decisions — especially for ambiguous tasks, when you need project context, or want to know about related work. You can also query a specific agent by providing agentId.",
+				"canBeReferencedInPrompt": true,
+				"icon": "$(comment-discussion)",
+				"inputSchema": {
+					"type": "object",
+					"required": ["question"],
+					"properties": {
+						"question": {
+							"type": "string",
+							"description": "The question to ask Goltana — be specific about what context or guidance you need"
+						},
+						"agentId": {
+							"type": "string",
+							"description": "Optional agent ID to query instead of Goltana (e.g. 'devops', 'qa')"
+						}
+					}
+				}
+			},
+			{
+				"name": "get_related_tasks",
+				"tags": ["bridge", "tasks", "query"],
+				"displayName": "Get Related Tasks",
+				"modelDescription": "Fetch tasks from Goltana's task system to understand what other work is pending, running, or completed in the same area. Useful for avoiding duplicate work, understanding dependencies, or checking if related tasks have already been addressed.",
+				"canBeReferencedInPrompt": true,
+				"icon": "$(tasklist)",
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"agentId": {
+							"type": "string",
+							"description": "Filter tasks by agent ID (e.g. 'goltana', 'devops')"
+						},
+						"status": {
+							"type": "string",
+							"enum": ["pending", "running", "completed", "failed"],
+							"description": "Filter tasks by status"
+						},
+						"limit": {
+							"type": "number",
+							"minimum": 1,
+							"maximum": 50,
+							"description": "Maximum number of tasks to return (default: 20)"
+						}
+					}
+				}
+			},
+			{
+				"name": "request_approval",
+				"tags": ["bridge", "approval", "goltana"],
+				"displayName": "Request Approval",
+				"modelDescription": "Request approval from Goltana before taking a risky or impactful action. This creates an inbox item in Goltana's system that requires human or AI review before proceeding. Use for destructive operations, major refactors, deployments, or any action where you are uncertain about the right approach.",
+				"canBeReferencedInPrompt": true,
+				"icon": "$(shield)",
+				"userConfirmationRequired": true,
+				"inputSchema": {
+					"type": "object",
+					"required": ["title", "context"],
+					"properties": {
+						"title": {
+							"type": "string",
+							"description": "Short title for the approval request (e.g. 'Delete unused database tables')"
+						},
+						"context": {
+							"type": "string",
+							"description": "Full context explaining what you want to do and why approval is needed"
+						},
+						"agentId": {
+							"type": "string",
+							"description": "Agent ID requesting approval (default: copilot-bridge)"
+						},
+						"blocking": {
+							"type": "boolean",
+							"description": "Whether this blocks further work until approved (default: true)"
+						}
+					}
+				}
 			}
 		],
 		"configuration": {

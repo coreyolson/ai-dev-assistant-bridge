@@ -19,7 +19,7 @@ import * as aiQueue from './modules/aiQueue';
 import * as webhooksMod from './modules/webhooks';
 import * as responseQueueMod from './modules/responseQueue';
 import { formatCountdown } from './modules/timeFormatting';
-import { ReportCompletionTool, ReportProgressTool } from './modules/lmTools';
+import { ReportCompletionTool, ReportProgressTool, ReportObservationTool, QueryGoltanaTool, GetRelatedTasksTool, RequestApprovalTool } from './modules/lmTools';
 
 let outputChannel: vscode.OutputChannel;
 let currentPort: number = 3737;
@@ -137,9 +137,13 @@ export async function activate(context: vscode.ExtensionContext) {
 	// Register Language Model Tools so Copilot agents can call them
 	context.subscriptions.push(
 		vscode.lm.registerTool('report_completion', new ReportCompletionTool()),
-		vscode.lm.registerTool('report_progress', new ReportProgressTool())
+		vscode.lm.registerTool('report_progress', new ReportProgressTool()),
+		vscode.lm.registerTool('report_observation', new ReportObservationTool()),
+		vscode.lm.registerTool('query_goltana', new QueryGoltanaTool()),
+		vscode.lm.registerTool('get_related_tasks', new GetRelatedTasksTool()),
+		vscode.lm.registerTool('request_approval', new RequestApprovalTool())
 	);
-	log(LogLevel.INFO, '🔧 Registered LM tools: report_completion, report_progress');
+	log(LogLevel.INFO, '🔧 Registered LM tools: report_completion, report_progress, report_observation, query_goltana, get_related_tasks, request_approval');
 
 	// Start HTTP server to receive feedback
 	startFeedbackServer(context);
@@ -215,9 +219,13 @@ export async function activate(context: vscode.ExtensionContext) {
 	// Register Language Model Tools for agent-mode feedback loop
 	context.subscriptions.push(
 		vscode.lm.registerTool('report_completion', new ReportCompletionTool()),
-		vscode.lm.registerTool('report_progress', new ReportProgressTool())
+		vscode.lm.registerTool('report_progress', new ReportProgressTool()),
+		vscode.lm.registerTool('report_observation', new ReportObservationTool()),
+		vscode.lm.registerTool('query_goltana', new QueryGoltanaTool()),
+		vscode.lm.registerTool('get_related_tasks', new GetRelatedTasksTool()),
+		vscode.lm.registerTool('request_approval', new RequestApprovalTool())
 	);
-	log(LogLevel.INFO, 'Language Model Tools registered: report_completion, report_progress');
+	log(LogLevel.INFO, 'Language Model Tools registered: report_completion, report_progress, report_observation, query_goltana, get_related_tasks, request_approval');
 
 	// Log server status (no popup notification)
 	log(LogLevel.INFO, `Feedback server started on http://localhost:${currentPort}`);
